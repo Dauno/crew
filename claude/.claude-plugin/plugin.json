@@ -1,0 +1,8 @@
+{
+  "name": "crew",
+  "version": "1.0.0",
+  "description": "Shared crew skills for Claude Code",
+  "author": {
+    "name": "crew maintainers"
+  }
+}

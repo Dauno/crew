@@ -1,0 +1,215 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'Usage: crew claude [args] | crew codex [args]\n' >&2
+}
+
+if (($# == 0)); then
+  usage
+  exit 2
+fi
+
+cli_name=$1
+shift
+case "$cli_name" in
+  claude | codex) ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
+
+# Clear tool-session markers while preserving provider configuration.
+unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_ENTRYPOINT \
+  CLAUDE_CODE_EXECPATH CLAUDE_CODE_MESSAGING_SOCKET \
+  CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_CODE_SESSION_ATTENDED \
+  CLAUDE_CODE_SESSION_ID CLAUDE_CODE_SSE_PORT CLAUDE_PID \
+  CODEX_CI CODEX_SANDBOX CODEX_SANDBOX_NETWORK_DISABLED \
+  CODEX_SESSION_ID CODEX_THREAD_ID
+
+source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+if command -v realpath >/dev/null 2>&1; then
+  default_crew_bin=$(realpath -- "${BASH_SOURCE[0]}")
+else
+  default_crew_bin=$source_root/bin/crew
+fi
+CREW_BIN=${CREW_BIN:-$default_crew_bin}
+default_core_instructions=$source_root/core/instructions.md
+CREW_CORE_INSTRUCTIONS=${CREW_CORE_INSTRUCTIONS:-$default_core_instructions}
+CREW_SKILLS=${CREW_SKILLS:-$source_root/skills}
+CREW_PLUGIN=${CREW_PLUGIN:-$source_root/claude}
+export CREW_BIN CREW_CORE_INSTRUCTIONS CREW_SKILLS CREW_PLUGIN
+
+if [[ -z ${KITTY_LISTEN_ON:-} ]] || ! kitten @ ls >/dev/null 2>&1; then
+  temp_dir=${TMPDIR:-/tmp}
+  socket_path="$temp_dir/crew-${UID:-0}-$$-${RANDOM}-${RANDOM}.sock"
+  while [[ -e $socket_path ]]; do
+    socket_path="$temp_dir/crew-${UID:-0}-$$-${RANDOM}-${RANDOM}.sock"
+  done
+  kitty --detach \
+    -o allow_remote_control=socket-only \
+    --listen-on "unix:$socket_path" \
+    --directory "$PWD" \
+    "$CREW_BIN" "$cli_name" "$@"
+  exit $?
+fi
+
+export CREW_CLI=$cli_name
+CREW_HOME=${XDG_DATA_HOME:-$HOME/.local/share}/crew
+CREW_MEMORY=$CREW_HOME/memory
+CREW_RUNS=$CREW_HOME/runs
+export CREW_HOME CREW_MEMORY CREW_RUNS
+
+repo_id() {
+  local origin
+  if ! origin=$(git remote get-url origin 2>/dev/null); then
+    printf 'local/%s\n' "$(basename -- "$PWD" | tr '[:upper:]' '[:lower:]')"
+    return
+  fi
+
+  python3 - "$origin" "$PWD" <<'PY'
+import os
+import re
+import sys
+from urllib.parse import unquote, urlsplit
+
+origin, workdir = sys.argv[1:]
+host = ""
+path = ""
+if origin.startswith(("git@", "hg@")) or re.match(
+    r"^[^/@]+@[^:]+:", origin
+):
+    match = re.match(r"^(?:[^@]+@)?([^:]+):(.+)$", origin)
+    if match:
+        host, path = match.groups()
+else:
+    parsed = urlsplit(origin)
+    if parsed.scheme and parsed.hostname:
+        host, path = parsed.hostname, parsed.path
+    elif ":" in origin:
+        host, path = origin.split(":", 1)
+
+path = unquote(path)
+path = path.split("?", 1)[0].split("#", 1)[0].strip("/")
+if path.endswith(".git"):
+    path = path[:-4]
+if host and path:
+    print(f"{host}/{path}".lower())
+else:
+    name = os.path.basename(os.path.normpath(workdir)).lower() or "root"
+    print(f"local/{name}")
+PY
+}
+
+CREW_REPO_ID=$(repo_id)
+export CREW_REPO_ID
+repo_memory=$CREW_MEMORY/repos/
+repo_memory+=${CREW_REPO_ID//\//_}
+
+umask 077
+mkdir -p "$CREW_HOME" "$CREW_MEMORY/global" "$CREW_MEMORY/machine" \
+  "$CREW_MEMORY/repos" "$repo_memory" "$CREW_RUNS"
+chmod 700 "$CREW_HOME" "$CREW_MEMORY" "$CREW_MEMORY/global" \
+  "$CREW_MEMORY/machine" "$CREW_MEMORY/repos" "$repo_memory" \
+  "$CREW_RUNS"
+
+create_index() {
+  local path=$1
+  local title=$2
+  if [[ ! -e $path ]]; then
+    printf '# %s\n' "$title" > "$path"
+  fi
+}
+
+create_index "$CREW_MEMORY/index.md" 'Crew memory'
+create_index "$CREW_MEMORY/global/index.md" 'Global memory'
+create_index "$CREW_MEMORY/machine/index.md" 'Machine memory'
+create_index "$CREW_MEMORY/repos/index.md" 'Repository memory'
+create_index "$repo_memory/index.md" 'Repository memory'
+
+if [[ ! -f $CREW_CORE_INSTRUCTIONS ]]; then
+  printf 'crew: missing core instructions: %s\n' \
+    "$CREW_CORE_INSTRUCTIONS" >&2
+  exit 1
+fi
+
+instructions_file=$(mktemp "${TMPDIR:-/tmp}/crew-instructions.XXXXXX")
+cleanup() {
+  rm -f -- "$instructions_file"
+}
+trap cleanup EXIT
+cat -- "$CREW_CORE_INSTRUCTIONS" > "$instructions_file"
+
+session_value() {
+  local name=$1
+  if [[ -n ${!name:-} ]]; then
+    printf '%s' "${!name}"
+  else
+    printf '(unset)'
+  fi
+}
+
+cat >> "$instructions_file" <<EOF
+
+## This session
+
+- CLI: $CREW_CLI
+- Role: $(session_value CREW_ROLE)
+- Node: $(session_value CREW_NODE)
+- Task: $(session_value CREW_TASK)
+- Parent Kitty window: $(session_value CREW_PARENT)
+- Repository ID: $CREW_REPO_ID
+- Memory: $CREW_MEMORY
+- Runs: $CREW_RUNS
+- Skills: $CREW_SKILLS
+- Skill files:
+EOF
+while IFS= read -r skill_file; do
+  printf '  - %s\n' "$skill_file" >> "$instructions_file"
+done < <(
+  find "$CREW_SKILLS" -mindepth 2 -maxdepth 2 -type f \
+    -name SKILL.md -print | sort
+)
+printf '%s\n' \
+  "- Read relevant skills from the listed SKILL.md paths before acting." \
+  "- Nodes helper: $CREW_SKILLS/nodes/scripts/nodes.sh" \
+  >> "$instructions_file"
+
+if [[ $cli_name == claude ]]; then
+  claude_args=(
+    --append-system-prompt-file "$instructions_file"
+    --plugin-dir "$CREW_PLUGIN"
+  )
+  settings=$(python3 \
+    - "$CREW_SKILLS/nodes/scripts/nodes.sh" <<'PY'
+import json
+import sys
+rule = f"Bash(bash {sys.argv[1]} *)"
+print(json.dumps({"permissions": {"allow": [rule]}}))
+PY
+)
+  claude_args+=(--settings "$settings")
+  if [[ ${CREW_ROLE:-} == worker ]] &&
+    [[ ${CREW_UNATTENDED_WORKERS:-0} == 1 ]]; then
+    claude_args+=(--dangerously-skip-permissions)
+  fi
+  claude "${claude_args[@]}" "$@"
+else
+  developer_instructions=$(python3 - "$instructions_file" <<'PY'
+import json
+import pathlib
+import sys
+print(json.dumps(pathlib.Path(sys.argv[1]).read_text()))
+PY
+)
+  codex_args=(
+    --config "developer_instructions=$developer_instructions"
+    --sandbox danger-full-access
+  )
+  if [[ ${CREW_ROLE:-} == worker ]] &&
+    [[ ${CREW_UNATTENDED_WORKERS:-0} == 1 ]]; then
+    codex_args+=(--dangerously-bypass-approvals-and-sandbox)
+  fi
+  codex "${codex_args[@]}" "$@"
+fi
