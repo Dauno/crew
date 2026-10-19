@@ -1,5 +1,5 @@
 {
-  description = "Shared launcher and agent tools for Claude Code and Codex";
+  description = "Shared launcher and agent tools for Claude Code, Codex and Pi";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/7c8764b7c7b09b34f632464276218ef9090eaa11";
@@ -51,6 +51,7 @@
             pkgs.kitty
             claudePkgs.claude-code
             codex
+            pkgs.pi-coding-agent
           ];
           crew = pkgs.stdenvNoCC.mkDerivation {
             pname = "crew";
@@ -130,6 +131,7 @@
               shellcheck
               bash
               coreutils
+              pi-coding-agent
             ];
           };
         });

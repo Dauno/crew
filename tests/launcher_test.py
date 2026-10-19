@@ -35,7 +35,10 @@ class LauncherTest(unittest.TestCase):
             path.mkdir(parents=True)
         self.capture = self.root / "capture.json"
         self.core = self.root / "instructions.md"
-        self.core.write_text("# Fixture core instructions\n\nCORE_MARKER\n")
+        self.core.write_text(
+            "# Fixture core instructions\n\n"
+            "Workers run without confirmation prompts.\n\nCORE_MARKER\n"
+        )
         helper = self.skills / "nodes" / "scripts" / "nodes.sh"
         helper.parent.mkdir(parents=True)
         helper.write_text("#!/usr/bin/env bash\nexit 0\n")
@@ -56,7 +59,7 @@ class LauncherTest(unittest.TestCase):
 keys = (
     "CREW_HOME", "CREW_MEMORY", "CREW_RUNS", "CREW_SKILLS", "CREW_BIN",
     "CREW_CLI", "CREW_ROLE", "CREW_NODE", "CREW_TASK", "CREW_PARENT",
-    "CREW_REPO_ID", "CREW_UNATTENDED_WORKERS",
+    "CREW_REPO_ID",
     "CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_MESSAGING_SOCKET",
     "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ATTENDED",
@@ -85,7 +88,7 @@ pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(record))
 keys = (
     "CREW_HOME", "CREW_MEMORY", "CREW_RUNS", "CREW_SKILLS", "CREW_BIN",
     "CREW_CLI", "CREW_ROLE", "CREW_NODE", "CREW_TASK", "CREW_PARENT",
-    "CREW_REPO_ID", "CREW_UNATTENDED_WORKERS",
+    "CREW_REPO_ID",
     "CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_ENTRYPOINT",
     "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_MESSAGING_SOCKET",
     "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_SESSION_ATTENDED",
@@ -103,6 +106,25 @@ if "--config" in args:
     value = args[args.index("--config") + 1]
     if value.startswith("developer_instructions="):
         record["instructions"] = json.loads(value.split("=", 1)[1])
+pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(record))
+""",
+        )
+        self._write_program(
+            "pi",
+            f"#!{sys.executable}\n" + """import json, os, pathlib, sys
+args = sys.argv[1:]
+record = {"args": args, "cwd": os.getcwd(),
+          "path": os.environ.get("PATH", ""),
+          "env": {key: os.environ[key] for key in (
+              "CREW_HOME", "CREW_MEMORY", "CREW_RUNS", "CREW_SKILLS",
+              "CREW_BIN", "CREW_CLI", "CREW_ROLE", "CREW_NODE",
+              "CREW_TASK", "CREW_PARENT", "CREW_REPO_ID",
+          ) if key in os.environ}}
+if "--append-system-prompt" in args:
+    path = args[args.index("--append-system-prompt") + 1]
+    record["instructions"] = pathlib.Path(path).read_text()
+if "--skill" in args:
+    record["skill"] = args[args.index("--skill") + 1]
 pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(record))
 """,
         )
@@ -305,15 +327,13 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
     def test_generated_instructions_and_claude_plugin_arguments(self):
         result = self._run("claude", "--print", "prompt")
         record = self._record()
-        permission_notice = (
-            "Workers run without confirmation prompts by default. "
-            "Set CREW_UNATTENDED_WORKERS=0 to require prompts."
-        )
-        self.assertEqual(result.stderr, f"crew: {permission_notice}\n")
+        self.assertEqual(result.stderr, "")
         self.assertIn(
-            "- Worker permissions: " + permission_notice,
+            "Workers run without confirmation prompts.",
             record["instructions"],
         )
+        self.assertNotIn("Worker permissions:", record["instructions"])
+        self.assertNotIn("CREW_UNATTENDED_WORKERS", record["instructions"])
         self.assertIn("CORE_MARKER", record["instructions"])
         self.assertIn("## This session", record["instructions"])
         helper = self.skills / "nodes/scripts/nodes.sh"
@@ -331,22 +351,6 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         self.assertEqual(record["args"][plugin_index], str(self.plugin))
         self.assertEqual(list(self.tmp.glob("crew-instructions.*")), [])
 
-    def test_human_session_reports_attended_worker_override(self):
-        result = self._run(
-            "claude",
-            env=self._env(CREW_UNATTENDED_WORKERS="0"),
-        )
-        record = self._record()
-        permission_notice = (
-            "Workers require confirmation prompts. "
-            "Set CREW_UNATTENDED_WORKERS=1 to run without prompts."
-        )
-        self.assertEqual(result.stderr, f"crew: {permission_notice}\n")
-        self.assertIn(
-            "- Worker permissions: " + permission_notice,
-            record["instructions"],
-        )
-
     def test_human_claude_allows_only_nodes_helper(self):
         self._run("claude")
         settings = self._record()["settings"]
@@ -361,7 +365,7 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         self.assertFalse((self.home / ".claude").exists())
         self.assertFalse((self.home / ".codex").exists())
 
-    def test_claude_worker_permissions_default_and_overrides(self):
+    def test_claude_worker_permissions_are_unconditional(self):
         env = self._env(
             CREW_ROLE="worker",
             CREW_NODE="worker-a",
@@ -384,27 +388,7 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         self.assertIn("- Task: task-a", record["instructions"])
         self.assertIn("- Parent Kitty window: 9", record["instructions"])
 
-        env = self._env(
-            CREW_ROLE="worker",
-            CREW_UNATTENDED_WORKERS="0",
-        )
-        self._run("claude", env=env)
-        self.assertNotIn(
-            "--dangerously-skip-permissions",
-            self._record()["args"],
-        )
-
-        env = self._env(
-            CREW_ROLE="worker",
-            CREW_UNATTENDED_WORKERS="1",
-        )
-        self._run("claude", env=env)
-        self.assertIn(
-            "--dangerously-skip-permissions",
-            self._record()["args"],
-        )
-
-    def test_codex_human_worker_and_unattended_permissions(self):
+    def test_codex_human_and_worker_permissions(self):
         self._run("codex", "exec", "--ephemeral", "extra", env=self._env())
         record = self._record()
         self.assertIn("--sandbox", record["args"])
@@ -426,32 +410,65 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
             worker_args,
         )
 
-        self._run(
-            "codex",
-            env=self._env(
-                CREW_ROLE="worker",
-                CREW_UNATTENDED_WORKERS="0",
-            ),
+    def test_pi_human_session_uses_shared_instructions_and_skill_path(self):
+        result = self._run("pi", "--offline", "preserve words")
+        record = self._record()
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(record["env"]["CREW_CLI"], "pi")
+        self.assertIn("Workers run without confirmation prompts.",
+                      record["instructions"])
+        self.assertEqual(record["skill"], str(self.skills))
+        self.assertEqual(
+            record["args"][-2:],
+            ["--offline", "preserve words"],
         )
-        attended_args = self._record()["args"]
-        self.assertNotIn(
-            "--dangerously-bypass-approvals-and-sandbox",
-            attended_args,
-        )
+        self.assertIn("--append-system-prompt", record["args"])
+        self.assertNotIn("--no-skills", record["args"])
+        self.assertNotIn("--session-dir", record["args"])
+        self.assertNotIn("--dangerously-skip-permissions", record["args"])
+        self.assertEqual(list(self.tmp.glob("crew-instructions.*")), [])
 
-        self._run(
-            "codex",
-            env=self._env(
-                CREW_ROLE="worker",
-                CREW_UNATTENDED_WORKERS="1",
-            ),
+    def test_pi_worker_uses_private_isolated_session_directory(self):
+        task = "task-a"
+        started = "1792412345"
+        env = self._env(
+            CREW_ROLE="worker", CREW_NODE="worker-a", CREW_TASK=task,
+            KITTY_WINDOW_ID="42", CREW_STARTED_AT=started,
         )
-        unattended_args = self._record()["args"]
-        self.assertIn("--sandbox", unattended_args)
-        self.assertIn(
-            "--dangerously-bypass-approvals-and-sandbox",
-            unattended_args,
+        self._run("pi", "--offline", env=env)
+        record = self._record()
+        args = record["args"]
+        session_dir = (
+            self.home / ".local/share/crew/runs" / task / "pi"
+            / f"42-{started}"
         )
+        self.assertEqual(
+            args[args.index("--session-dir") + 1], str(session_dir)
+        )
+        self.assertEqual(stat.S_IMODE(session_dir.stat().st_mode), 0o700)
+        self.assertEqual(args[-1], "--offline")
+        self.assertNotIn("--model", args)
+        self.assertNotIn("--provider", args)
+        self.assertNotIn("--dangerously-skip-permissions", args)
+        self.assertIn("- Node: worker-a", record["instructions"])
+        repeated = self._run("pi", "--offline", env=env, expected=1)
+        self.assertIn("already exists", repeated.stderr)
+
+    def test_pi_worker_rejects_unsafe_directory_selectors(self):
+        for extra in (
+            {"CREW_TASK": "../escape"},
+            {"KITTY_WINDOW_ID": "0"},
+            {"CREW_STARTED_AT": "bad"},
+        ):
+            with self.subTest(selector=extra):
+                values = {
+                    "CREW_ROLE": "worker", "CREW_TASK": "task-a",
+                    "KITTY_WINDOW_ID": "42", "CREW_STARTED_AT": "1792412345",
+                }
+                values.update(extra)
+                env = self._env(**values)
+                result = self._run("pi", env=env, expected=2)
+                self.assertFalse(self.capture.exists())
 
     def test_launcher_writes_only_to_crew_home_and_temp_files(self):
         self._run("codex")
@@ -472,6 +489,7 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         self.assertFalse((self.home / ".agents").exists())
         self.assertFalse((self.home / ".claude").exists())
         self.assertFalse((self.home / ".codex").exists())
+        self.assertFalse((self.home / ".pi").exists())
         self.assertEqual(list(self.tmp.glob("crew-instructions.*")), [])
         instructions = self._record()["instructions"]
         self.assertIn(
@@ -482,7 +500,7 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
             self.assertIn(str(self.skills / name / "SKILL.md"), instructions)
 
     def test_launcher_does_not_add_model_provider_or_credential_flags(self):
-        for cli in ("claude", "codex"):
+        for cli in ("claude", "codex", "pi"):
             with self.subTest(cli=cli):
                 self._run(cli)
                 args = self._record()["args"]
@@ -587,7 +605,7 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
     def test_invalid_cli_prints_help_and_exits_two(self):
         result = self._run("unknown", expected=2)
         self.assertIn(
-            "Usage: crew claude [args] | crew codex [args]",
+            "Usage: crew claude|codex|pi [args]",
             result.stderr,
         )
         self.assertFalse((self.root / "kitty-capture.json").exists())

@@ -1,13 +1,13 @@
 # crew
 
-crew gives Claude Code and Codex shared instructions, skills, Kitty workers
-and private machine-local memory. It helps agents carry decisions and lessons
-across sessions and repositories.
+crew gives Claude Code, Codex and Pi shared instructions, skills, Kitty
+workers and private machine-local memory. It helps agents carry decisions and
+lessons across sessions and repositories.
 
 ## Requirements
 
 Use Nix with flakes enabled, SSH access to this private repository, Kitty for
-worker tabs and a configured Claude Code or Codex CLI.
+worker tabs and a configured Claude Code, Codex or Pi CLI.
 
 ## Install
 
@@ -15,18 +15,28 @@ worker tabs and a configured Claude Code or Codex CLI.
 nix profile add git+ssh://git@github.com/Dauno/crew
 ```
 
+## Update
+
+```sh
+nix profile upgrade --refresh crew
+```
+
+This installs the latest commit on `main`. Open a new `crew` session to use
+it.
+
 ## Use
 
-Run either CLI in the current repository:
+Run any supported CLI in the current repository:
 
 ```sh
 crew claude
 crew codex
+crew pi
 ```
 
 Outside a remote-controllable Kitty session, `crew` opens its own Kitty
 window. Ask the agent to open workers and describe their tasks. The agent uses
-the `nodes` skill and helper to open Claude Code or Codex workers as Kitty
+the `nodes` skill and helper to open Claude Code, Codex or Pi workers as Kitty
 tabs. Workers send completion notices to their parent.
 
 Helper reference:
@@ -50,9 +60,8 @@ workers propose them. The human's current request takes precedence.
 
 Claude Code's human session keeps confirmation prompts; a settings rule
 permits the nodes helper. The human's Codex session runs with
-`--sandbox danger-full-access`. Workers run without confirmation prompts by
-default. Set `CREW_UNATTENDED_WORKERS=0` before launching crew to require
-prompts for workers. The human's session keeps its usual permissions.
+`--sandbox danger-full-access`. Pi keeps its usual configuration. Workers
+always run without confirmation prompts. Pi 0.75.4 needs no permission flag.
 
 CLI provider settings, including Vertex URLs, stay in the CLI's own
 configuration. crew never passes model, provider or credential settings. Its
@@ -79,10 +88,10 @@ Repeated response IDs count once. Cumulative Codex counters act as a
 fallback, not additional usage. A cumulative session with model changes
 uses `unknown` attribution rather than guessing each model's share.
 
-`cost_usd` comes from Claude Code's own total or a Codex price estimate.
-`cost_source` identifies `claude`, `price_table` or `unavailable`.
-Unknown costs use `null`, never zero. Prices depend on the provider;
-subscription billing may differ from an API estimate.
+`cost_usd` comes from Claude Code's own total, a Codex price estimate, or
+Pi's reported estimate. `cost_source` identifies `claude`, `price_table`,
+`pi` or `unavailable`. Unknown costs use `null`, never zero. Pi reports
+estimated costs. Subscription limits and actual charges can differ.
 
 The shipped `skills/nodes/prices.json` stays empty until prices are verified.
 Override it per machine with `$CREW_HOME/prices.json`. Both files map exact
@@ -115,11 +124,12 @@ jq -s '
 
 ## Develop
 
-Run a local checkout with either CLI:
+Run a local checkout with any supported CLI:
 
 ```sh
 nix run ~/Projects/crew -- claude
 nix run ~/Projects/crew -- codex
+nix run ~/Projects/crew -- pi
 nix flake check
 nix develop -c bash tests/live/nodes_live.sh
 ```

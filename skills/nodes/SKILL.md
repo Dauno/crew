@@ -1,14 +1,15 @@
 ---
 name: nodes
 description: >-
-  Coordinate Claude Code and Codex workers in Kitty windows. Workers use it to
-  notify their parent about task results.
+  Coordinate Claude Code, Codex and Pi workers in Kitty windows. Workers use
+  it to notify their parent about task results.
 ---
 
 # Agent nodes
 
-Use nodes for bounded work that benefits from separate Claude Code or Codex
-sessions. The coordinator assigns tasks, checks results and stays accountable.
+Use nodes for bounded work that benefits from separate Claude Code, Codex or
+Pi sessions. The coordinator assigns tasks, checks results and stays
+accountable.
 Create fresh nodes for every new task. Never reuse a node from another task.
 
 ## Find and message nodes
@@ -73,6 +74,14 @@ repository trust. Unattended permissions can trigger a one-time notice.
 
 Ask the human to answer trust or permissions dialogs in that worker's tab.
 Never answer a dialog yourself or send a brief to it. Return could accept it.
+Pi 0.75.4 has no permission prompts and needs no bypass flag.
+
+Pi draws its editor between matching full-width horizontal borders above two
+footer rows. Draft text keeps a notice waiting, regardless of its color.
+Long drafts can show scroll indicators. Autocomplete lists, overlays,
+incomplete frames and unknown editor layouts keep notices waiting too. An
+empty editor remains available while Pi runs a command, so it can accept a
+notice or steering input. The helper rechecks the editor before sending.
 
 ```bash
 crew-nodes read 456 screen
@@ -95,6 +104,9 @@ file paths.
 In Codex, use `/status` to inspect context usage. Read its current label
 before interpreting a percentage. Record only the context indicator.
 
+In Pi, use `/session` for session totals. Read context usage from its footer.
+Record only context indicators, never the displayed session path.
+
 ## Stop and close workers
 
 Use only the helper to interrupt a worker. It sends Escape to that worker's
@@ -114,6 +126,10 @@ When the work is complete, close the CLI normally. Claude Code accepts
 If an idle worker shell remains, close its ID with the helper. The helper
 closes only windows labeled `crew_role=worker`.
 Do not close a busy or unrelated window.
+
+Pi also exits through `/quit`. Escape aborts active Pi work and can restore a
+queued message to the editor. Escape does not reliably clear an ordinary
+draft, so inspect the screen before sending a stop command.
 
 ## Spawn and report
 

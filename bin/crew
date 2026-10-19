@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: crew claude [args] | crew codex [args]\n' >&2
+  printf 'Usage: crew claude|codex|pi [args]\n' >&2
 }
 
 if (($# == 0)); then
@@ -13,7 +13,7 @@ fi
 cli_name=$1
 shift
 case "$cli_name" in
-  claude | codex) ;;
+  claude | codex | pi) ;;
   *)
     usage
     exit 2
@@ -57,17 +57,6 @@ if [[ -z ${KITTY_LISTEN_ON:-} ]] || ! kitten @ ls >/dev/null 2>&1; then
 fi
 
 export CREW_CLI=$cli_name
-unattended_workers=${CREW_UNATTENDED_WORKERS:-1}
-if [[ $unattended_workers == 1 ]]; then
-  worker_permissions="Workers run without confirmation prompts by default."
-  worker_permissions+=" Set CREW_UNATTENDED_WORKERS=0 to require prompts."
-else
-  worker_permissions="Workers require confirmation prompts."
-  worker_permissions+=" Set CREW_UNATTENDED_WORKERS=1 to run without prompts."
-fi
-if [[ -z ${CREW_ROLE:-} ]]; then
-  printf 'crew: %s\n' "$worker_permissions" >&2
-fi
 CREW_HOME=${XDG_DATA_HOME:-$HOME/.local/share}/crew
 CREW_MEMORY=$CREW_HOME/memory
 CREW_RUNS=$CREW_HOME/runs
@@ -172,7 +161,6 @@ cat >> "$instructions_file" <<EOF
 - Task: $(session_value CREW_TASK)
 - Parent Kitty window: $(session_value CREW_PARENT)
 - Repository ID: $CREW_REPO_ID
-- Worker permissions: $worker_permissions
 - Memory: $CREW_MEMORY
 - Runs: $CREW_RUNS
 - Skills: $CREW_SKILLS
@@ -201,12 +189,11 @@ print(json.dumps({"permissions": {"allow": [rule]}}))
 PY
 )
   claude_args+=(--settings "$settings")
-  if [[ ${CREW_ROLE:-} == worker ]] &&
-    [[ $unattended_workers == 1 ]]; then
+  if [[ ${CREW_ROLE:-} == worker ]]; then
     claude_args+=(--dangerously-skip-permissions)
   fi
   claude "${claude_args[@]}" "$@"
-else
+elif [[ $cli_name == codex ]]; then
   developer_instructions=$(python3 - "$instructions_file" <<'PY'
 import json
 import pathlib
@@ -218,9 +205,39 @@ PY
     --config "developer_instructions=$developer_instructions"
     --sandbox danger-full-access
   )
-  if [[ ${CREW_ROLE:-} == worker ]] &&
-    [[ $unattended_workers == 1 ]]; then
+  if [[ ${CREW_ROLE:-} == worker ]]; then
     codex_args+=(--dangerously-bypass-approvals-and-sandbox)
   fi
   codex "${codex_args[@]}" "$@"
+else
+  pi_args=(
+    --append-system-prompt "$instructions_file"
+    --skill "$CREW_SKILLS"
+  )
+  if [[ ${CREW_ROLE:-} == worker ]]; then
+    pi_task=${CREW_TASK:-_untasked}
+    [[ -n $pi_task && $pi_task != . && $pi_task != .. &&
+      $pi_task != */* && $pi_task != *$'\n'* &&
+      $pi_task != *$'\r'* ]] || {
+      printf 'crew: invalid task path component for Pi worker.\n' >&2
+      exit 2
+    }
+    [[ ${KITTY_WINDOW_ID:-} =~ ^[1-9][0-9]*$ ]] || {
+      printf 'crew: Pi worker requires a numeric KITTY_WINDOW_ID.\n' >&2
+      exit 2
+    }
+    [[ ${CREW_STARTED_AT:-} =~ ^[1-9][0-9]*$ ]] || {
+      printf 'crew: Pi worker requires a numeric CREW_STARTED_AT.\n' >&2
+      exit 2
+    }
+    pi_session_dir="$CREW_RUNS/$pi_task/pi/${KITTY_WINDOW_ID}-${CREW_STARTED_AT}"
+    mkdir -p "$(dirname -- "$pi_session_dir")"
+    if ! mkdir -- "$pi_session_dir"; then
+      printf 'crew: Pi worker session directory already exists: %s\n' \
+        "$pi_session_dir" >&2
+      exit 1
+    fi
+    pi_args+=(--session-dir "$pi_session_dir")
+  fi
+  pi "${pi_args[@]}" "$@"
 fi

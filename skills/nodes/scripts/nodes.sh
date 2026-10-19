@@ -149,6 +149,7 @@ input_state() {
     return 0
   fi
   if ! state=$(printf '%s' "$output" | python3 -c '
+import re
 import sys
 
 rows = [[]]
@@ -220,6 +221,75 @@ while i < len(text):
         rows[-1].append((char, dim, foreground))
     i += 1
 
+def plain(row):
+    return "".join(char for char, _, _ in row)
+
+
+def border(row):
+    value = plain(row)
+    return (len(value) > 1 and len(set(value)) == 1
+            and value[0] in "─━═-")
+
+
+def pi_frame_bounds():
+    visible_rows = [index for index, row in enumerate(rows)
+                    if plain(row).strip()]
+    if len(visible_rows) < 4:
+        return None
+    for footer_rows in (3, 2):
+        lower_position = len(visible_rows) - footer_rows - 1
+        if lower_position < 0:
+            continue
+        lower_index = visible_rows[lower_position]
+        lower_border = plain(rows[lower_index])
+        if not border(rows[lower_index]):
+            continue
+        footer_indexes = visible_rows[lower_position + 1:]
+        if border(rows[footer_indexes[0]]):
+            continue
+        top_index = None
+        for index in range(lower_index - 1, -1, -1):
+            if border(rows[index]) and plain(rows[index]) == lower_border:
+                top_index = index
+                break
+        if top_index is None or top_index + 1 >= lower_index:
+            continue
+        prompt_inside = any(
+            re.match(r"^\s*[❯›](?:\s|$)", plain(row))
+            for row in rows[top_index + 1:lower_index]
+        )
+        if prompt_inside:
+            continue
+        return top_index, lower_index, footer_indexes
+    return None
+
+
+def pi_state():
+    frame = pi_frame_bounds()
+    if frame is None:
+        return None
+    top_index, lower_index, footer_indexes = frame
+
+    editor_rows = rows[top_index + 1:lower_index]
+    if any(not char.isspace()
+           for row in editor_rows for char, _, _ in row):
+        return "busy"
+
+    stats = plain(rows[footer_indexes[1]]).strip()
+    context_pattern = (
+        r"(?:^|\s)(?:\d+(?:\.\d+)?%|\?)/"
+        r"\d+(?:\.\d+)?[kM]?(?:\s|$)"
+    )
+    if not re.search(context_pattern, stats):
+        return "unknown"
+    return "clear"
+
+
+pi_input = pi_state()
+if pi_input is not None:
+    print(pi_input)
+    raise SystemExit
+
 candidates = []
 for row_index, row in enumerate(rows):
     for char_index, (char, _, _) in enumerate(row):
@@ -235,6 +305,16 @@ if not candidates:
 row_index, char_index = max(candidates)
 row = rows[row_index]
 marker_foreground = row[char_index][2]
+marker = row[char_index][0]
+
+pi_frame_lines = sum(
+    re.fullmatch(r"─+|─── [↑↓] \d+ more ─*", plain(following).strip())
+    is not None
+    for following in rows[row_index + 1:]
+)
+if pi_frame_lines >= 2:
+    print("unknown")
+    raise SystemExit
 
 for char, is_dim, color in row[char_index + 1:]:
     if not char.isspace() and not is_dim:
@@ -243,6 +323,16 @@ for char, is_dim, color in row[char_index + 1:]:
         else:
             print("unknown")
         raise SystemExit
+
+if marker == "›":
+    # Codex draws its footer below the prompt. Only the prompt row describes
+    # the draft; scanning footer text makes an empty prompt look occupied.
+    if any(not char.isspace() for char, _, _ in row[char_index + 1:]):
+        print("clear")
+    else:
+        # A blank composer without a suggestion is ambiguous, so wait.
+        print("unknown")
+    raise SystemExit
 
 border = set("─━═-")
 for following in rows[row_index + 1:]:
@@ -511,8 +601,8 @@ spawn_node() {
     esac
   done
   [[ -n $name ]] || die 'spawn requires --name.'
-  [[ $cli == claude || $cli == codex ]] ||
-    die 'spawn --cli must be claude or codex.'
+  [[ $cli == claude || $cli == codex || $cli == pi ]] ||
+    die 'spawn --cli must be claude, codex or pi.'
   if [[ -z $cwd || ! -d $cwd ]]; then
     directory_error="spawn --cwd must be an existing directory: $cwd"
     die "$directory_error"
