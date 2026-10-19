@@ -15,6 +15,15 @@ worker tabs and a configured Claude Code or Codex CLI.
 nix profile add git+ssh://git@github.com/Dauno/crew
 ```
 
+## Update
+
+```sh
+nix profile upgrade --refresh crew
+```
+
+This installs the latest commit on `main`. Open a new `crew` session to use
+it.
+
 ## Use
 
 Run either CLI in the current repository:
