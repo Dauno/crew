@@ -22,6 +22,26 @@ die() {
   exit 1
 }
 
+require_runtime_tools() {
+  local program
+  for program in jq python3; do
+    command -v "$program" >/dev/null 2>&1 ||
+      die "$program is required but was not found on PATH."
+  done
+}
+
+send_wait_seconds=60
+notice_wait_seconds=3600
+poll_interval=0.25
+if [[ ${CREW_NODES_TESTING:-0} == 1 ]]; then
+  send_wait_seconds=${CREW_NODES_TEST_SEND_WAIT_SECONDS:-60}
+  notice_wait_seconds=${CREW_NODES_TEST_NOTICE_WAIT_SECONDS:-3600}
+  [[ $send_wait_seconds =~ ^[0-9]+$ ]] ||
+    die 'test send wait must be a nonnegative integer.'
+  [[ $notice_wait_seconds =~ ^[0-9]+$ ]] ||
+    die 'test notice wait must be a nonnegative integer.'
+fi
+
 require_connection() {
   [[ -n ${KITTY_LISTEN_ON:-} ]] || die 'KITTY_LISTEN_ON is not set.'
   command -v kitten >/dev/null 2>&1 || die 'kitten is not on PATH.'
@@ -121,11 +141,172 @@ kitty_send_text() {
   printf '%s' "$text" | kitty_remote send-text --match "id:$id" --stdin
 }
 
+input_state() {
+  local id=$1 output state
+  if ! output=$(kitty_remote get-text \
+    --match "id:$id" --ansi 2>/dev/null); then
+    printf 'unknown\n'
+    return 0
+  fi
+  if ! state=$(printf '%s' "$output" | python3 -c '
+import sys
+
+rows = [[]]
+dim = False
+foreground = None
+text = sys.stdin.read()
+i = 0
+
+
+def apply_sgr(params):
+    global dim, foreground
+    parts = params.split(";") if params else ["0"]
+    index = 0
+    while index < len(parts):
+        item = parts[index]
+        fields = item.split(":")
+        try:
+            code = int(fields[0] or "0")
+        except ValueError:
+            index += 1
+            continue
+        if code == 0:
+            dim = False
+            foreground = None
+        elif code == 2:
+            dim = True
+        elif code == 22:
+            dim = False
+        elif code == 39:
+            foreground = None
+        elif code in (38, 48, 58):
+            if code == 38:
+                foreground = ("sgr", item)
+            if len(fields) == 1 and index + 1 < len(parts):
+                mode = parts[index + 1]
+                index += 4 if mode == "2" else 2 if mode == "5" else 1
+        elif 30 <= code <= 37 or 90 <= code <= 97:
+            foreground = ("ansi", code)
+        index += 1
+
+
+while i < len(text):
+    char = text[i]
+    if char == "\x1b":
+        if text.startswith("\x1b]", i):
+            bell = text.find("\x07", i + 2)
+            string_end = text.find("\x1b\\", i + 2)
+            ends = [end for end in (bell, string_end) if end >= 0]
+            if ends:
+                end = min(ends)
+                i = end + (1 if end == bell else 2)
+            else:
+                i = len(text)
+            continue
+        if text.startswith("\x1b[", i):
+            end = i + 2
+            while end < len(text) and not ("@" <= text[end] <= "~"):
+                end += 1
+            if end < len(text):
+                if text[end] == "m":
+                    apply_sgr(text[i + 2:end])
+                i = end + 1
+                continue
+        i += 1
+        continue
+    if char == "\n":
+        rows.append([])
+    elif char != "\r":
+        rows[-1].append((char, dim, foreground))
+    i += 1
+
+candidates = []
+for row_index, row in enumerate(rows):
+    for char_index, (char, _, _) in enumerate(row):
+        if char in ("❯", "›") and all(
+            prior.isspace() for prior, _, _ in row[:char_index]
+        ):
+            candidates.append((row_index, char_index))
+
+if not candidates:
+    print("unknown")
+    raise SystemExit
+
+row_index, char_index = max(candidates)
+row = rows[row_index]
+marker_foreground = row[char_index][2]
+
+for char, is_dim, color in row[char_index + 1:]:
+    if not char.isspace() and not is_dim:
+        if color == marker_foreground:
+            print("busy")
+        else:
+            print("unknown")
+        raise SystemExit
+
+border = set("─━═-")
+for following in rows[row_index + 1:]:
+    visible = [(char, is_dim, color) for char, is_dim, color in following
+               if not char.isspace()]
+    if not visible:
+        continue
+    if all(char in border for char, _, _ in visible):
+        break
+    if any(not is_dim and color == marker_foreground
+           for _, is_dim, color in visible):
+        print("busy")
+        raise SystemExit
+
+print("clear")
+') ; then
+    printf 'unknown\n'
+    return 0
+  fi
+  case $state in
+    clear|busy|unknown) printf '%s\n' "$state" ;;
+    *) printf 'unknown\n' ;;
+  esac
+}
+
+last_input_state=unknown
+
+wait_for_clear() {
+  local id=$1 timeout_seconds=$2 started=$SECONDS state
+  while :; do
+    state=$(input_state "$id")
+    if [[ -n ${CREW_NOTICE_PENDING:-} &&
+      $state != "${last_input_state:-unknown}" ]]; then
+      write_sender_status "$CREW_NOTICE_PENDING" running "$state" \
+        'Waiting for an empty parent input' || true
+    fi
+    last_input_state=$state
+    [[ $state == clear ]] && return 0
+    (( SECONDS - started < timeout_seconds )) || return 1
+    sleep "$poll_interval"
+  done
+}
+
 send_and_enter() {
-  local id=$1 text=$2
-  kitty_send_text "$id" "$text"
+  local id=$1 text=$2 timeout_seconds=$3
+  local started=$SECONDS remaining state
+  while :; do
+    remaining=$((timeout_seconds - SECONDS + started))
+    (( remaining >= 0 )) || return 1
+    wait_for_clear "$id" "$remaining" || return 1
+    state=$(input_state "$id")
+    last_input_state=$state
+    [[ $state == clear ]] && break
+    (( SECONDS - started < timeout_seconds )) || return 1
+  done
+  kitty_send_text "$id" "$text" || {
+    last_input_state=send-failed
+    return 1
+  }
   sleep 0.5
-  kitty_send_text "$id" $'\r'
+  kitty_send_text "$id" $'\r' || {
+    last_input_state=send-failed
+    return 1
+  }
 }
 
 send_text() {
@@ -157,14 +338,142 @@ send_text() {
   fi
 
   if [[ $enter == 1 ]]; then
-    send_and_enter "$id" "$text"
+    if ! send_and_enter "$id" "$text" "$send_wait_seconds"; then
+      die "input stayed occupied or unrecognized after ${send_wait_seconds}s."
+    fi
   else
     kitty_send_text "$id" "$text"
   fi
 }
 
+record_metrics() {
+  local status=$1 report=$2 script_dir metrics_script summary
+  script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+  metrics_script=$script_dir/metrics.sh
+  if [[ -f $metrics_script ]] &&
+    summary=$(bash "$metrics_script" record --status "$status" \
+      --report "$report" 2>/dev/null) &&
+    [[ -n $summary && $summary != *$'\n'* ]]; then
+    printf '%s\n' "$summary"
+  else
+    printf 'metrics unavailable\n'
+  fi
+}
+
+save_notice() {
+  local message=$1 task=$2 runs_dir=$3 notices_dir
+  [[ $task != */* && $task != . && $task != .. ]] ||
+    die 'CREW_TASK must be a single path component.'
+  notices_dir=$runs_dir/$task/notices
+  mkdir -p -- "$notices_dir" || die "could not create $notices_dir."
+  local pending
+  pending=$(mktemp "$notices_dir/notice.XXXXXXXX") ||
+    die "could not create a pending notice in $notices_dir."
+  if ! printf '%s\n' "$message" >"$pending"; then
+    rm -f -- "$pending"
+    die "could not write the pending notice: $pending"
+  fi
+  printf '%s\n' "$pending"
+}
+
+write_sender_status() {
+  local pending=$1 state=$2 last_input=$3 reason=$4
+  local notices_dir status_file temporary
+  notices_dir=${pending%/*}
+  status_file=$pending.status
+  temporary=$(mktemp "$notices_dir/.sender-status.XXXXXXXX") || return 1
+  if ! printf 'state=%s\npid=%s\nlast_input=%s\nreason=%s\n' \
+    "$state" "$$" "$last_input" "$reason" >"$temporary"; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+  if ! mv -f -- "$temporary" "$status_file"; then
+    rm -f -- "$temporary"
+    return 1
+  fi
+}
+
+sender_pending=''
+
+sender_interrupted() {
+  local signal=$1
+  if [[ -n $sender_pending && -f $sender_pending ]]; then
+    write_sender_status "$sender_pending" failed \
+      "${last_input_state:-unknown}" "Sender interrupted by $signal" || true
+  fi
+  exit 1
+}
+
+start_background_sender() {
+  local pending=$1 script=${BASH_SOURCE[0]} reply reason
+  local -a launch_args=(
+    launch --type=background --allow-remote-control --copy-env
+    --env "CREW_PARENT=$CREW_PARENT"
+    --env "CREW_NOTICE_PENDING=$pending"
+  )
+  if [[ ${CREW_NODES_TESTING:-} == 1 ]]; then
+    launch_args+=(
+      --env CREW_NODES_TESTING=1
+      --env "CREW_NODES_TEST_NOTICE_WAIT_SECONDS=$notice_wait_seconds"
+    )
+  fi
+  write_sender_status "$pending" starting "$last_input_state" \
+    'Kitty background launch requested' || return 1
+  if ! reply=$(kitty_remote "${launch_args[@]}" bash "$script" \
+    _deliver-pending "$pending" 2>&1); then
+    reply=${reply//$'\n'/ }
+    reason="Kitty background launch failed: ${reply:0:160}"
+    write_sender_status "$pending" failed "$last_input_state" \
+      "$reason" || true
+    printf 'nodes: notice pending at %s; %s.\n' \
+      "$pending" "$reason" >&2
+    return 1
+  fi
+}
+
+deliver_pending() {
+  local pending=${1:-} message='' started elapsed remaining
+  [[ $# -eq 1 ]] || usage
+  [[ -f $pending ]] || return 0
+  [[ -n ${CREW_PARENT:-} ]] || return 0
+  valid_id "$CREW_PARENT"
+  refuse_self notify "$CREW_PARENT"
+  IFS= read -r message <"$pending" || [[ -n $message ]] || return 0
+  sender_pending=$pending
+  trap 'sender_interrupted HUP' HUP
+  trap 'sender_interrupted INT' INT
+  trap 'sender_interrupted TERM' TERM
+  last_input_state=unknown
+  write_sender_status "$pending" running "$last_input_state" \
+    'Waiting for an empty parent input' || true
+  started=$SECONDS
+  while :; do
+    elapsed=$((SECONDS - started))
+    remaining=$((notice_wait_seconds - elapsed))
+    if (( remaining < 0 )); then
+      write_sender_status "$pending" failed "$last_input_state" \
+        "Wait limit ${notice_wait_seconds}s expired" || true
+      return 1
+    fi
+    if send_and_enter "$CREW_PARENT" "$message" "$remaining"; then
+      rm -f -- "$pending"
+      rm -f -- "$pending.status"
+      return 0
+    fi
+    elapsed=$((SECONDS - started))
+    if (( elapsed >= notice_wait_seconds )); then
+      write_sender_status "$pending" failed "$last_input_state" \
+        "Wait limit ${notice_wait_seconds}s expired" || true
+      return 1
+    fi
+    write_sender_status "$pending" running "$last_input_state" \
+      'Waiting for an empty parent input' || true
+    sleep "$poll_interval"
+  done
+}
+
 notify_parent() {
-  local status=${1:-} report=${2:-} parent message
+  local status=${1:-} report=${2:-} parent message pending runs_dir metrics
   [[ $# -eq 2 ]] || usage
   [[ -n $status ]] || die 'notify STATUS must not be empty.'
   [[ -n ${CREW_TASK:-} ]] || die 'notify requires CREW_TASK.'
@@ -176,13 +485,20 @@ notify_parent() {
   parent=$CREW_PARENT
   valid_id "$parent"
   refuse_self notify "$parent"
-  require_window "$parent"
-  message="$CREW_TASK/$CREW_NODE: $status. Report: $report"
-  send_and_enter "$parent" "$message"
+  metrics=$(record_metrics "$status" "$report")
+  message="$CREW_TASK/$CREW_NODE: $status. Report: $report. Metrics: $metrics"
+  runs_dir=${CREW_RUNS:-${CREW_HOME:-$HOME/.local/share/crew}/runs}
+  pending=$(save_notice "$message" "$CREW_TASK" "$runs_dir")
+  if send_and_enter "$parent" "$message" "$send_wait_seconds"; then
+    rm -f -- "$pending"
+  elif ! start_background_sender "$pending"; then
+    die "notice remains pending at $pending; background sender failed."
+  fi
 }
 
 spawn_node() {
   local name='' cli='' cwd='' task=${CREW_TASK:-} reply directory_error
+  local started_at
   local -a extra_args=()
   while [[ $# -gt 0 ]]; do
     case $1 in
@@ -206,6 +522,7 @@ spawn_node() {
   valid_id "$KITTY_WINDOW_ID"
   [[ -n ${CREW_BIN:-} ]] || die 'CREW_BIN is not set.'
   [[ -x $CREW_BIN ]] || die "CREW_BIN is not executable: $CREW_BIN"
+  started_at=$(date +%s)
 
   if ! reply=$(kitty_remote launch --type=tab --keep-focus --copy-env \
     --tab-title "$name · $cli" \
@@ -215,6 +532,7 @@ spawn_node() {
     --env "CREW_NODE=$name" \
     --env "CREW_TASK=$task" \
     --env "CREW_PARENT=$KITTY_WINDOW_ID" \
+    --env "CREW_STARTED_AT=$started_at" \
     --var "crew_node=$name" \
     --var "crew_cli=$cli" \
     --var crew_role=worker \
@@ -248,6 +566,7 @@ close_window() {
 }
 
 [[ $# -gt 0 ]] || usage
+require_runtime_tools
 command_name=$1
 shift
 require_connection
@@ -263,5 +582,6 @@ case $command_name in
   spawn) spawn_node "$@" ;;
   interrupt) interrupt_window "$@" ;;
   close) close_window "$@" ;;
+  _deliver-pending) deliver_pending "$@" ;;
   *) usage ;;
 esac

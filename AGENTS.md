@@ -109,8 +109,41 @@ The helper refuses to send to, interrupt or close its own window.
 `interrupt` and `close` act only on windows labeled `crew_role=worker`.
 `send --enter` sends Return separately, after a 0.5 second pause.
 `send` fails on empty input; only `--enter-only` sends Return alone.
-`notify` needs `CREW_TASK`, `CREW_NODE` and `CREW_PARENT`. It sends
-`<task>/<node>: <STATUS>. Report: <REPORT>` to the parent with Return.
+`notify` needs `CREW_TASK`, `CREW_NODE` and `CREW_PARENT`. It records the
+worker's metrics, then sends this line to the parent with Return:
+`<task>/<node>: <STATUS>. Report: <REPORT>. Metrics: <summary>`.
+`spawn` also sets `CREW_STARTED_AT` to the Unix time of the launch.
+
+### Delivery without collisions
+
+A human may be typing in the destination's input. Before `send --enter` or
+`notify` types, the helper waits until that input holds no human text.
+Placeholder and suggestion text do not count; the helper tells them apart by
+their style in `kitten @ get-text --ansi`. It checks again just before
+typing. `send` waits up to 60 seconds, then fails with a clear error.
+`notify` waits up to 60 seconds, then hands the notice to a background
+sender that keeps waiting for up to one hour. A notice that is not yet
+delivered stays in `$CREW_RUNS/<task>/notices/`.
+
+### Metrics
+
+`skills/nodes/scripts/metrics.sh record --status S --report R` appends one
+JSON line to `$CREW_HOME/metrics.jsonl` and prints a one-line summary.
+`notify` calls it. It reads only the worker's own CLI log: Claude Code by
+`CLAUDE_CODE_SESSION_ID`, Codex by `CODEX_THREAD_ID`.
+
+Each line has the time, task, node, parent, repository ID, CLI and its
+version, models, status, report and wall seconds since `CREW_STARTED_AT`.
+It also has the session's own durations and tokens: input, cache read, cache
+write, output and reasoning. Cost comes from Claude Code's own total. For
+Codex, it comes from a price table when the table lists the model;
+otherwise it is null. `cost_source` says which applies. The package ships
+`skills/nodes/prices.json`; `$CREW_HOME/prices.json` overrides it per
+machine, for example with Vertex prices at work.
+
+Metrics hold numbers and identifiers, never prompts, code or output. They
+stay on the machine with the rest of `$CREW_HOME`. A metrics failure never
+blocks a notice: the summary then says `metrics unavailable`.
 `spawn` runs `kitten @ launch --type=tab --keep-focus --copy-env`.
 It titles the tab `<name> · <cli>`.
 It sets `CREW_ROLE=worker`, `CREW_NODE`, `CREW_TASK` and `CREW_PARENT`.
@@ -122,7 +155,8 @@ Agents pass them only when the human asks; by default workers get none.
 ### Runs
 
 Each task keeps briefs and reports in `$CREW_RUNS/<task>/`.
-A notice is one line: `<task>/<node>: <status>. Report: <path>`.
+A notice is one line:
+`<task>/<node>: <status>. Report: <path>. Metrics: <summary>`.
 
 ### Kitty
 
@@ -163,6 +197,9 @@ They unset `HYPRLAND_INSTANCE_SIGNATURE` and `XDG_RUNTIME_DIR`.
 They must not depend on Linux-only paths.
 Evaluate the macOS package with
 `nix eval .#packages.aarch64-darwin.default.drvPath`.
+Run the nodes live test with
+`nix develop -c bash tests/live/nodes_live.sh`.
+The default shell provides Kitty, jq, Python, ShellCheck, Bash and coreutils.
 Run `tests/live/` scripts only in a desktop Kitty session.
 Live tests start their own hidden Kitty, never the human's windows.
 On Linux, Kitty needs `XDG_RUNTIME_DIR` to reach Wayland.

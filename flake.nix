@@ -115,5 +115,23 @@
     {
       packages = forAllSystems (system: (packagesFor system).packages);
       checks = forAllSystems (system: (packagesFor system).checks);
+      devShells = forAllSystems (system:
+        let
+          pkgs = import nixpkgs {
+            inherit system;
+            config.allowUnfree = true;
+          };
+        in {
+          default = pkgs.mkShell {
+            packages = with pkgs; [
+              kitty
+              jq
+              python3
+              shellcheck
+              bash
+              coreutils
+            ];
+          };
+        });
     };
 }

@@ -35,6 +35,12 @@ Workers send their one-line notice to their parent with `notify`:
 crew-nodes notify done /path/to/report.md
 ```
 
+The helper records metrics and adds `Metrics: <summary>` to the notice.
+Metrics stay in `$CREW_HOME/metrics.jsonl`. If the parent input stays
+occupied for 60 seconds, a detached sender retries for up to one hour.
+The pending notice stays in `$CREW_RUNS/<task>/notices/` until delivery.
+The sender records its state and failure reason beside it in a `.status` file.
+
 The helper formats the notice and sends it to the `CREW_PARENT` window.
 Use the exact window ID shown by `crew-nodes list` for other destinations.
 
@@ -45,10 +51,12 @@ window marked `self` or to your own window. The helper rejects sends,
 interrupts and closes to its own window.
 
 `send` reads nonempty text from standard input. It removes carriage returns
-before sending. With `--enter`, it sends the text, waits 0.5 seconds, then
-sends Return separately. Empty input fails; use `send ID --enter-only` to
-send Return without reading standard input. Workers use `notify STATUS REPORT`
-instead of formatting their own completion message.
+before sending. With `--enter`, it waits up to 60 seconds for an empty input,
+sends the text, waits 0.5 seconds, then sends Return separately. Styled
+placeholders and suggestions do not count as human text. An unrecognized
+input times out instead of blocking forever. Empty input fails; use
+`send ID --enter-only` to send Return without reading standard input. Workers
+use `notify STATUS REPORT` instead of formatting their own completion message.
 
 Send each message once. Do not poll or run a forwarding loop. Wait for the
 worker's notice, then read its window when you need a deliberate status check.

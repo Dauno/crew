@@ -3,8 +3,10 @@
 
 import json
 import os
+import shutil
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -18,6 +20,10 @@ class NodesTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.bin_dir = self.root / "bin"
+        self.script_dir = self.root / "scripts"
+        self.script_dir.mkdir()
+        self.helper = self.script_dir / "nodes.sh"
+        shutil.copy2(HELPER, self.helper)
         self.home = self.root / "home"
         self.work = self.root / "work"
         self.bin_dir.mkdir()
@@ -31,7 +37,7 @@ class NodesTest(unittest.TestCase):
         fake = self.bin_dir / "kitten"
         fake.write_text(
             "#!" + os.sys.executable + "\n"
-            + "import json, os, sys\n"
+            + "import json, os, subprocess, sys\n"
             + "args = sys.argv[1:]\n"
             + "payload = ''\n"
             + "if '--stdin' in args:\n"
@@ -55,9 +61,50 @@ class NodesTest(unittest.TestCase):
             + "    raise SystemExit(3)\n"
             + "  print(os.environ['FAKE_KITTEN_LS'])\n"
             + "elif 'get-text' in args:\n"
-            + "  print('screen text')\n"
+            + "  if '--ansi' not in args:\n"
+            + "    print('screen text')\n"
+            + "  elif os.environ.get('FAKE_KITTEN_SEQUENCE_FILE'):\n"
+            + "    sequence_file = os.environ['FAKE_KITTEN_SEQUENCE_FILE']\n"
+            + "    with open(sequence_file, encoding='utf-8') as f:\n"
+            + "      sequence = json.load(f)\n"
+            + "    counter_path = os.environ[\n"
+            + "      'FAKE_KITTEN_SEQUENCE_COUNTER']\n"
+            + "    try:\n"
+            + "      with open(counter_path, encoding='utf-8') as f:\n"
+            + "        index = int(f.read())\n"
+            + "    except FileNotFoundError:\n"
+            + "      index = 0\n"
+            + "    with open(counter_path, 'w', encoding='utf-8') as f:\n"
+            + "      f.write(str(index + 1))\n"
+            + "    sys.stdout.write(sequence[\n"
+            + "      min(index, len(sequence) - 1)])\n"
+            + "  elif os.environ.get('FAKE_KITTEN_TEXT_FILE'):\n"
+            + "    text_path = os.environ['FAKE_KITTEN_TEXT_FILE']\n"
+            + "    with open(text_path, encoding='utf-8') as f:\n"
+            + "      sys.stdout.write(f.read())\n"
+            + "  else:\n"
+            + "    sys.stdout.write(os.environ.get('FAKE_KITTEN_TEXT', ''))\n"
             + "elif 'launch' in args:\n"
-            + "  print('41')\n",
+            + "  if '--type=background' in args:\n"
+            + "    if os.environ.get('FAKE_KITTEN_FAIL_BACKGROUND'):\n"
+            + "      print('background launch failed', file=sys.stderr)\n"
+            + "      raise SystemExit(5)\n"
+            + "    child_env = os.environ.copy()\n"
+            + "    for index, option in enumerate(args[:-1]):\n"
+            + "      if option == '--env' and '=' in args[index + 1]:\n"
+            + "        name, value = args[index + 1].split('=', 1)\n"
+            + "        child_env[name] = value\n"
+            + "    try:\n"
+            + "      subprocess.Popen(args[-4:], stdin=subprocess.DEVNULL,\n"
+            + "        stdout=subprocess.DEVNULL,\n"
+            + "        stderr=subprocess.DEVNULL,\n"
+            + "        env=child_env, start_new_session=True)\n"
+            + "    except OSError as error:\n"
+            + "      print('background launch failed:', error,\n"
+            + "        file=sys.stderr)\n"
+            + "      raise SystemExit(5)\n"
+            + "  else:\n"
+            + "    print('41')\n",
             encoding="utf-8",
         )
         fake.chmod(0o755)
@@ -127,6 +174,9 @@ class NodesTest(unittest.TestCase):
                 "CREW_BIN": str(self.crew_bin),
                 "FAKE_KITTEN_LOG": str(self.log),
                 "FAKE_KITTEN_LS": json.dumps(self.ls_data),
+                "FAKE_KITTEN_TEXT": "\u001b[m❯ \u001b[22;2mTry a sample task",
+                "CREW_RUNS": str(self.root / "runs"),
+                "FAKE_METRICS_LOG": str(self.root / "metrics.jsonl"),
             }
         )
 
@@ -135,7 +185,7 @@ class NodesTest(unittest.TestCase):
 
     def run_helper(self, *args, input_text=None, env=None):
         return subprocess.run(
-            ["bash", str(HELPER), *args],
+            ["bash", str(self.helper), *args],
             input=input_text,
             capture_output=True,
             text=True,
@@ -161,6 +211,27 @@ class NodesTest(unittest.TestCase):
             }
         )
         return env
+
+    def enable_test_waits(self, env, send=1, notice=3):
+        env.update(
+            {
+                "CREW_NODES_TESTING": "1",
+                "CREW_NODES_TEST_SEND_WAIT_SECONDS": str(send),
+                "CREW_NODES_TEST_NOTICE_WAIT_SECONDS": str(notice),
+            }
+        )
+        return env
+
+    def write_input(self, text):
+        path = self.root / "input.txt"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def install_metrics(self, content):
+        path = self.script_dir / "metrics.sh"
+        path.write_text(content, encoding="utf-8")
+        path.chmod(0o755)
+        return path
 
     def test_list_emits_one_object_per_window(self):
         result = self.run_helper("list")
@@ -236,6 +307,115 @@ class NodesTest(unittest.TestCase):
             any("send-text" in call["args"] for call in self.calls())
         )
 
+    def test_send_enter_accepts_placeholder_and_suggestion_styles(self):
+        fixtures = {
+            "claude placeholder": (
+                "\u001b[m❯ \u001b[22;2mTry \\\"write a test\\\""
+            ),
+            "codex placeholder": (
+                "\u001b[22;1;48:2:30:30:30m›\u001b[22m "
+                "\u001b[22;2mAsk Codex to do anything"
+            ),
+            "suggestion popup": (
+                "\u001b[38:2:177:185:249m❯ /kitty-nodes Create and coordinate"
+                "\n\u001b[m❯ \u001b[22;2mTry a sample task"
+            ),
+        }
+        for label, fixture in fixtures.items():
+            with self.subTest(label=label):
+                env = self.env.copy()
+                env["FAKE_KITTEN_TEXT"] = fixture
+                result = self.run_helper(
+                    "send", "8", "--enter", input_text="test message", env=env
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_send_enter_waits_until_occupied_input_is_cleared(self):
+        input_path = self.write_input("\u001b[m❯ review the build result")
+        env = self.enable_test_waits(self.env.copy(), send=2)
+        env["FAKE_KITTEN_TEXT_FILE"] = str(input_path)
+        process = subprocess.Popen(
+            ["bash", str(self.helper), "send", "8", "--enter"],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=env,
+        )
+        process.stdin.write("worker message")
+        process.stdin.close()
+        process.stdin = None
+        for _ in range(40):
+            if any("get-text" in call["args"] for call in self.calls()):
+                break
+            time.sleep(0.025)
+        self.assertFalse(
+            any("send-text" in call["args"] for call in self.calls())
+        )
+        input_path.write_text(
+            "\u001b[m❯ \u001b[22;2mTry a sample task",
+            encoding="utf-8",
+        )
+        stdout, stderr = process.communicate(timeout=5)
+        self.assertEqual(process.returncode, 0, stderr)
+        self.assertEqual(stdout, "")
+        sent = [
+            call["stdin"] for call in self.calls()
+            if "send-text" in call["args"]
+        ]
+        self.assertEqual(
+            sent,
+            ["worker message", "\r"],
+        )
+
+    def test_send_enter_rechecks_input_before_typing(self):
+        clear = "\u001b[m❯ \u001b[22;2mTry a sample task"
+        busy = "\u001b[m❯ human text"
+        sequence_path = self.root / "input-sequence.json"
+        sequence_path.write_text(
+            json.dumps([clear, busy, clear, clear]), encoding="utf-8"
+        )
+        env = self.enable_test_waits(self.env.copy(), send=2)
+        env["FAKE_KITTEN_SEQUENCE_FILE"] = str(sequence_path)
+        env["FAKE_KITTEN_SEQUENCE_COUNTER"] = str(self.root / "input-count")
+        result = self.run_helper(
+            "send", "8", "--enter", input_text="worker message", env=env
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        send_index = next(
+            index for index, call in enumerate(calls)
+            if "send-text" in call["args"]
+        )
+        self.assertGreaterEqual(
+            sum("get-text" in call["args"] for call in calls[:send_index]), 4
+        )
+
+    def test_send_enter_times_out_for_busy_or_unrecognized_input(self):
+        for fixture in (
+            "\u001b[m❯ human text",
+            "\u001b[m❯ Try a sample task",
+            "no recognized prompt",
+        ):
+            with self.subTest(fixture=fixture):
+                env = self.enable_test_waits(self.env.copy(), send=2)
+                env["FAKE_KITTEN_TEXT"] = fixture
+                started = time.monotonic()
+                result = self.run_helper(
+                    "send", "8", "--enter", input_text="worker message",
+                    env=env,
+                )
+                elapsed = time.monotonic() - started
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(
+                    "input stayed occupied or unrecognized", result.stderr
+                )
+                self.assertGreaterEqual(elapsed, 0.5)
+                self.assertLess(elapsed, 5)
+                self.assertFalse(
+                    any("send-text" in call["args"] for call in self.calls())
+                )
+
     def test_send_enter_only_sends_return_without_reading_input(self):
         result = self.run_helper(
             "send", "8", "--enter-only", input_text="must not be sent"
@@ -245,9 +425,14 @@ class NodesTest(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["stdin"], "\r")
 
-    def test_notify_sends_formatted_notice_to_parent(self):
+    def test_notify_records_metrics_and_sends_summary(self):
         report = self.root / "report.md"
         report.write_text("completed\n", encoding="utf-8")
+        self.install_metrics(
+            "#!/usr/bin/env bash\n"
+            "printf '%s\\n' \"$*\" >>\"$FAKE_METRICS_LOG\"\n"
+            "printf '%s\\n' 'input=12 output=3'\n"
+        )
         result = self.run_helper(
             "notify", "done", str(report), env=self.notify_environment()
         )
@@ -256,7 +441,18 @@ class NodesTest(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         self.assertEqual(
             [call["stdin"] for call in calls],
-            [f"crew-v1/worker: done. Report: {report}", "\r"],
+            [
+                f"crew-v1/worker: done. Report: {report}. "
+                "Metrics: input=12 output=3",
+                "\r",
+            ],
+        )
+        self.assertEqual(
+            (self.root / "metrics.jsonl").read_text(encoding="utf-8"),
+            f"record --status done --report {report}\n",
+        )
+        self.assertFalse(
+            list((self.root / "runs" / "crew-v1" / "notices").glob("*"))
         )
         self.assertTrue(
             all(
@@ -264,6 +460,140 @@ class NodesTest(unittest.TestCase):
                 for call in calls
             )
         )
+
+    def test_notify_uses_unavailable_when_metrics_are_missing(self):
+        report = self.root / "report.md"
+        report.write_text("completed\n", encoding="utf-8")
+        result = self.run_helper(
+            "notify", "done", str(report), env=self.notify_environment()
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [call for call in self.calls() if "send-text" in call["args"]]
+        self.assertEqual(
+            calls[0]["stdin"],
+            f"crew-v1/worker: done. Report: {report}. "
+            "Metrics: metrics unavailable",
+        )
+
+    def test_notify_uses_unavailable_when_metrics_fail(self):
+        report = self.root / "report.md"
+        report.write_text("completed\n", encoding="utf-8")
+        self.install_metrics(
+            "#!/usr/bin/env bash\n"
+            "printf '%s\\n' 'short metrics failure' >&2\n"
+            "exit 4\n"
+        )
+        result = self.run_helper(
+            "notify", "done", str(report), env=self.notify_environment()
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        calls = [call for call in self.calls() if "send-text" in call["args"]]
+        self.assertEqual(
+            calls[0]["stdin"],
+            f"crew-v1/worker: done. Report: {report}. "
+            "Metrics: metrics unavailable",
+        )
+
+    def test_notify_detached_sender_keeps_notice_until_delivery(self):
+        report = self.root / "report.md"
+        report.write_text("completed\n", encoding="utf-8")
+        input_path = self.write_input("\u001b[m❯ human is still writing")
+        env = self.enable_test_waits(
+            self.notify_environment(), send=2, notice=5
+        )
+        env["FAKE_KITTEN_TEXT_FILE"] = str(input_path)
+        started = time.monotonic()
+        result = self.run_helper("notify", "done", str(report), env=env)
+        elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertGreaterEqual(elapsed, 0.8)
+        self.assertLess(elapsed, 5)
+        notices = self.root / "runs" / "crew-v1" / "notices"
+        pending = [
+            path for path in notices.glob("notice.*")
+            if not path.name.endswith(".status")
+        ]
+        self.assertEqual(len(pending), 1)
+        expected = (
+            f"crew-v1/worker: done. Report: {report}. "
+            "Metrics: metrics unavailable"
+        )
+        self.assertEqual(
+            pending[0].read_text(encoding="utf-8").strip(), expected
+        )
+        launch_call = next(
+            call for call in self.calls()
+            if "launch" in call["args"]
+            and "--type=background" in call["args"]
+        )
+        for value in (
+            "--allow-remote-control",
+            "--copy-env",
+            "CREW_PARENT=7",
+            "CREW_NODES_TESTING=1",
+            "CREW_NODES_TEST_NOTICE_WAIT_SECONDS=5",
+            f"CREW_NOTICE_PENDING={pending[0]}",
+        ):
+            self.assertIn(value, launch_call["args"])
+
+        input_path.write_text(
+            "\u001b[m❯ \u001b[22;2mTry a sample task",
+            encoding="utf-8",
+        )
+        deadline = time.monotonic() + 6
+        while pending[0].exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertFalse(pending[0].exists())
+        calls = [call for call in self.calls() if "send-text" in call["args"]]
+        self.assertEqual([call["stdin"] for call in calls], [expected, "\r"])
+
+    def test_detached_sender_leaves_notice_after_its_wait_limit(self):
+        pending_dir = self.root / "runs" / "crew-v1" / "notices"
+        pending_dir.mkdir(parents=True)
+        pending = pending_dir / "notice.pending"
+        pending.write_text("crew-v1/worker: done", encoding="utf-8")
+        input_path = self.write_input("\u001b[m❯ human text")
+        env = self.enable_test_waits(self.notify_environment(), notice=2)
+        env["FAKE_KITTEN_TEXT_FILE"] = str(input_path)
+        started = time.monotonic()
+        result = self.run_helper("_deliver-pending", str(pending), env=env)
+        elapsed = time.monotonic() - started
+        self.assertNotEqual(result.returncode, 0)
+        self.assertGreaterEqual(elapsed, 0.5)
+        self.assertLess(elapsed, 5)
+        self.assertEqual(
+            pending.read_text(encoding="utf-8"), "crew-v1/worker: done"
+        )
+        status = Path(f"{pending}.status").read_text(encoding="utf-8")
+        self.assertIn("state=failed", status)
+        self.assertIn("last_input=busy", status)
+        self.assertIn("Wait limit 2s expired", status)
+        self.assertFalse(
+            any("send-text" in call["args"] for call in self.calls())
+        )
+
+    def test_notify_keeps_reason_when_kitty_cannot_start_sender(self):
+        report = self.root / "report.md"
+        report.write_text("completed\n", encoding="utf-8")
+        input_path = self.write_input("\u001b[m❯ human text")
+        env = self.enable_test_waits(self.notify_environment(), send=2)
+        env["FAKE_KITTEN_TEXT_FILE"] = str(input_path)
+        env["FAKE_KITTEN_FAIL_BACKGROUND"] = "1"
+        result = self.run_helper("notify", "done", str(report), env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("background sender failed", result.stderr)
+        notices = self.root / "runs" / "crew-v1" / "notices"
+        pending = [
+            path for path in notices.glob("notice.*")
+            if not path.name.endswith(".status")
+        ]
+        self.assertEqual(len(pending), 1)
+        self.assertIn("Metrics: metrics unavailable", pending[0].read_text())
+        status = Path(f"{pending[0]}.status").read_text(encoding="utf-8")
+        self.assertIn("state=failed", status)
+        self.assertIn("last_input=busy", status)
+        self.assertIn("Kitty background launch failed", status)
 
     def test_notify_requires_task_node_parent_and_report(self):
         report = self.root / "report.md"
@@ -303,6 +633,7 @@ class NodesTest(unittest.TestCase):
         )
 
     def test_spawn_sets_worker_environment_and_labels(self):
+        before = int(time.time())
         result = self.run_helper(
             "spawn",
             "--name",
@@ -316,7 +647,17 @@ class NodesTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout, "41\n")
+        after = int(time.time())
         args = self.calls()[-1]["args"]
+        started_values = [
+            value.removeprefix("CREW_STARTED_AT=")
+            for index, value in enumerate(args)
+            if index > 0 and args[index - 1] == "--env"
+            and value.startswith("CREW_STARTED_AT=")
+        ]
+        self.assertEqual(len(started_values), 1)
+        self.assertLessEqual(before, int(started_values[0]))
+        self.assertLessEqual(int(started_values[0]), after)
         self.assertEqual(
             args[:5],
             ["@", "--to", "unix:/tmp/crew-test.sock", "launch", "--type=tab"],
@@ -417,6 +758,24 @@ class NodesTest(unittest.TestCase):
         result = self.run_helper("read", "99")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no Kitty window has ID 99", result.stderr)
+
+    def test_missing_runtime_tool_fails_with_its_name(self):
+        for missing in ("jq", "python3"):
+            with self.subTest(missing=missing):
+                tool_dir = self.root / f"tools-without-{missing}"
+                tool_dir.mkdir()
+                for program in ("bash", "jq", "python3"):
+                    if program == missing:
+                        continue
+                    source = shutil.which(program)
+                    self.assertIsNotNone(source)
+                    (tool_dir / program).symlink_to(source)
+                env = self.env.copy()
+                env["PATH"] = str(tool_dir)
+                result = self.run_helper("list", env=env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(missing, result.stderr)
+                self.assertIn("not found on PATH", result.stderr)
 
 
 if __name__ == "__main__":
