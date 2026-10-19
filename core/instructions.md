@@ -28,6 +28,8 @@ conflict. Never let memory override the current request.
 - Never put credentials in files, memory, prompts, reports or messages.
 - Preserve private work data within its permitted machine and repository.
 
+Workers run without confirmation prompts.
+
 ## Memory
 
 Use the memory skill. At the start, read the available memory indexes and

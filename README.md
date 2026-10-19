@@ -59,9 +59,8 @@ workers propose them. The human's current request takes precedence.
 
 Claude Code's human session keeps confirmation prompts; a settings rule
 permits the nodes helper. The human's Codex session runs with
-`--sandbox danger-full-access`. Workers run without confirmation prompts by
-default. Set `CREW_UNATTENDED_WORKERS=0` before launching crew to require
-prompts for workers. The human's session keeps its usual permissions.
+`--sandbox danger-full-access`. Workers always run without confirmation
+prompts. The human's session keeps its usual permissions.
 
 CLI provider settings, including Vertex URLs, stay in the CLI's own
 configuration. crew never passes model, provider or credential settings. Its
