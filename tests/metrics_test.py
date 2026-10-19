@@ -4,6 +4,7 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -24,12 +25,26 @@ class MetricsTest(unittest.TestCase):
         self.crew_home = self.root / "crew-home"
         self.home.mkdir()
         self.crew_home.mkdir()
+        self.bin = self.root / "bin"
+        self.bin.mkdir()
+        fake_pi = self.bin / "pi"
+        fake_pi.write_text(
+            f"#!{sys.executable}\n"
+            "import sys\n"
+            "if sys.argv[1:] == ['--version']:\n"
+            "    print('0.75.4')\n"
+            "else:\n"
+            "    raise SystemExit(2)\n",
+            encoding="utf-8",
+        )
+        fake_pi.chmod(0o755)
         self.env = os.environ.copy()
         for key in (
             "HYPRLAND_INSTANCE_SIGNATURE",
             "XDG_RUNTIME_DIR",
             "CREW_STARTED_AT",
             "CREW_HOME",
+            "CREW_RUNS",
             "XDG_DATA_HOME",
             "CLAUDE_CODE_SESSION_ID",
             "CODEX_THREAD_ID",
@@ -39,6 +54,8 @@ class MetricsTest(unittest.TestCase):
             {
                 "HOME": str(self.home),
                 "CREW_HOME": str(self.crew_home),
+                "CREW_RUNS": str(self.crew_home / "runs"),
+                "PATH": str(self.bin) + os.pathsep + os.environ["PATH"],
                 "CREW_TASK": "crew-v1",
                 "CREW_NODE": "metrics-tests",
                 "CREW_PARENT": "125181:1",
@@ -77,6 +94,43 @@ class MetricsTest(unittest.TestCase):
         path.parent.mkdir(parents=True, exist_ok=True)
         self.write_jsonl(path, records)
         return path
+
+    def write_pi(self, session_id, records, window_id="73", started_at=None,
+                 task="crew-v1"):
+        started_at = started_at or str(int(time.time()) - 2)
+        path = (
+            self.crew_home / "runs" / task / "pi"
+            / f"{window_id}-{started_at}" / "session.jsonl"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        header = {
+            "type": "session",
+            "id": session_id,
+            "version": 3,
+            "timestamp": "2026-10-19T12:00:00Z",
+            "cwd": "/synthetic/project",
+        }
+        self.write_jsonl(path, [header, *records])
+        return path, {
+            "KITTY_WINDOW_ID": window_id,
+            "CREW_STARTED_AT": started_at,
+            "CREW_TASK": task,
+        }
+
+    @staticmethod
+    def pi_message(message_id, model, usage, timestamp):
+        return {
+            "type": "message",
+            "id": message_id,
+            "parentId": "synthetic-parent",
+            "timestamp": timestamp,
+            "message": {
+                "role": "assistant",
+                "model": model,
+                "content": [{"type": "text", "text": "SYNTHETIC_PROMPT"}],
+                "usage": usage,
+            },
+        }
 
     @staticmethod
     def write_jsonl(path, records):
@@ -619,6 +673,148 @@ class MetricsTest(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(result.stdout, "metrics unavailable\n")
                 self.assertEqual(self.rows(), [])
+
+    def test_pi_metrics_group_assistant_usage_and_report_pi_cost(self):
+        session_id = "3b2c8d3e-31ba-4bf9-8ef3-0d4d3f74e45a"
+        first = self.pi_message(
+            "pi-entry-a", "pi-model-a",
+            {"input": 100, "cacheRead": 20, "cacheWrite": 5,
+             "output": 30, "totalTokens": 155,
+             "cost": {"total": 0.0}},
+            "2026-10-19T12:00:10Z",
+        )
+        second = self.pi_message(
+            "pi-entry-b", "pi-model-b",
+            {"input": 200, "cacheRead": 40, "cacheWrite": 10,
+             "output": 50, "totalTokens": 300,
+             "cost": {"total": 0.25}},
+            "2026-10-19T12:01:00Z",
+        )
+        path, selectors = self.write_pi(
+            session_id,
+            [first, first, second,
+             {"type": "toolResult", "id": "tool-entry",
+              "content": "SYNTHETIC_TOOL_CONTENT"}],
+        )
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write('{"type":"message","partial":')
+        result = self.run_helper("pi", **selectors)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        row = self.rows()[0]
+        self.assertEqual(row["cli_version"], "0.75.4")
+        self.assertEqual(row["session_id"], session_id)
+        self.assertEqual(set(row["models"]), {"pi-model-a", "pi-model-b"})
+        self.assertEqual(row["usage_source"], "message_usage")
+        self.assertEqual(row["tokens"], self.token_counts(375, 60, 15, 80, 0))
+        self.assertEqual(
+            row["model_usage"]["pi-model-a"],
+            self.token_counts(125, 20, 5, 30, 0),
+        )
+        self.assertEqual(
+            row["model_usage"]["pi-model-b"],
+            self.token_counts(250, 40, 10, 50, 0),
+        )
+        self.assertEqual(row["cost_usd"], 0.25)
+        self.assertEqual(row["cost_source"], "pi")
+        self.assertEqual(row["session_seconds"], 60)
+        self.assertIsNone(row["api_seconds"])
+        self.assertIsNone(row["tool_seconds"])
+        encoded = json.dumps(row)
+        self.assertNotIn("SYNTHETIC_PROMPT", encoded)
+        self.assertNotIn("SYNTHETIC_TOOL_CONTENT", encoded)
+
+    def test_pi_missing_or_invalid_cost_is_unavailable_but_zero_is_valid(self):
+        cases = (
+            ("missing", {"input": 1, "output": 2}, None, "unavailable"),
+            ("invalid", {"input": 1, "output": 2,
+                         "cost": {"total": "not-a-number"}},
+             None, "unavailable"),
+            ("zero", {"input": 1, "output": 2,
+                      "cost": {"total": 0}}, 0, "pi"),
+        )
+        for index, (suffix, usage, expected_cost, expected_source) in enumerate(
+            cases
+        ):
+            with self.subTest(cost=suffix):
+                session_id = f"5c4bf209-1f1b-4d01-90ae-{index:012x}"
+                _, selectors = self.write_pi(
+                    session_id,
+                    [self.pi_message(
+                        "entry-" + suffix, "pi-model", usage,
+                        "2026-10-19T12:00:01Z",
+                    )],
+                    window_id=str(80 + len(self.rows())),
+                )
+                result = self.run_helper("pi", **selectors)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                row = self.rows()[-1]
+                self.assertEqual(row["cost_usd"], expected_cost)
+                self.assertEqual(row["cost_source"], expected_source)
+
+    def test_pi_requires_one_valid_session_file_and_safe_selectors(self):
+        session_id = "3b2c8d3e-31ba-4bf9-8ef3-0d4d3f74e45a"
+        _, unrelated_selectors = self.write_pi(
+            session_id,
+            [],
+            window_id="91",
+            started_at="1234567890",
+            task="other-worker",
+        )
+        missing_dir = (
+            self.crew_home / "runs" / "crew-v1" / "pi" / "91-1234567890"
+        )
+        missing_dir.mkdir(parents=True)
+        with self.subTest(failure="unrelated worker log"):
+            selectors = unrelated_selectors | {"CREW_TASK": "crew-v1"}
+            result = self.run_helper("pi", **selectors)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "metrics unavailable\n")
+            self.assertEqual(self.rows(), [])
+
+        path, selectors = self.write_pi(
+            session_id,
+            [self.pi_message(
+                "entry", "pi-model", {
+                    "input": 1, "output": 1, "cost": {"total": 0.1},
+                }, "2026-10-19T12:00:01Z",
+            )],
+        )
+        with self.subTest(failure="ambiguous files"):
+            self.write_jsonl(path.parent / "other.jsonl", [
+                {"type": "session", "id": session_id, "version": 3,
+                 "timestamp": "2026-10-19T12:00:00Z",
+                 "cwd": "/synthetic/project"},
+            ])
+            result = self.run_helper("pi", **selectors)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "metrics unavailable\n")
+            self.assertEqual(self.rows(), [])
+        (path.parent / "other.jsonl").unlink()
+
+        header_and_entries = path.read_text(encoding="utf-8").splitlines()
+        invalid_header = json.loads(header_and_entries[0])
+        invalid_header["timestamp"] = "not-a-timestamp"
+        path.write_text(
+            json.dumps(invalid_header) + "\n"
+            + "\n".join(header_and_entries[1:]) + "\n",
+            encoding="utf-8",
+        )
+        with self.subTest(failure="invalid header"):
+            result = self.run_helper("pi", **selectors)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "metrics unavailable\n")
+            self.assertEqual(self.rows(), [])
+
+        for invalid in (
+            {"CREW_TASK": "../escape"},
+            {"KITTY_WINDOW_ID": "0"},
+            {"CREW_STARTED_AT": "not-numeric"},
+        ):
+            with self.subTest(selector=invalid):
+                result = self.run_helper("pi", **(selectors | invalid))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "metrics unavailable\n")
+        self.assertEqual(self.rows(), [])
 
     def test_metrics_append_records_and_keep_status_and_report(self):
         session_id = "append-session"

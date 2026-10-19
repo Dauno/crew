@@ -2,7 +2,7 @@
 
 ## Mission
 
-crew gives Claude Code and Codex one shared core on any machine with Nix.
+crew gives Claude Code, Codex and Pi one shared core on any machine with Nix.
 The core holds base instructions, skills, memory and Kitty messaging.
 Whichever CLI the human starts, the agent has the same abilities.
 Agents in separate Kitty tabs coordinate work across repositories.
@@ -14,8 +14,8 @@ crew is private. It runs on this Linux host and on a macOS work machine.
 
 - `flake.nix`: inputs, the `crew` package and checks.
   Systems: x86_64-linux, aarch64-linux and aarch64-darwin.
-- `bin/crew`: the launcher. `crew claude` or `crew codex` starts that CLI.
-- `core/instructions.md`: base instructions that both CLIs receive.
+- `bin/crew`: launcher for `crew claude`, `crew codex` or `crew pi`.
+- `core/instructions.md`: base instructions that all three CLIs receive.
 - `claude/`: the Claude Code adapter, a plugin that carries the skills.
 - `skills/nodes/`: Kitty messaging between agents, with `scripts/nodes.sh`.
   The package installs it on the PATH as `crew-nodes`.
@@ -39,7 +39,7 @@ The launcher exports these variables to the CLI and its tools:
 | `CREW_RUNS` | `$CREW_HOME/runs` |
 | `CREW_SKILLS` | the store path of `skills/` |
 | `CREW_BIN` | the store path of the `crew` executable |
-| `CREW_CLI` | `claude` or `codex` |
+| `CREW_CLI` | `claude`, `codex` or `pi` |
 | `CREW_ROLE` | `worker` in spawned nodes; unset in the human's session |
 | `CREW_NODE` | the node name, in workers |
 | `CREW_TASK` | the task label, in workers |
@@ -98,7 +98,7 @@ crew-nodes <command>
   send ID [--enter]        send nonempty standard input; --enter adds Return
   send ID --enter-only     send only Return; read no input
   notify STATUS REPORT     worker notice to its parent, in the notice format
-  spawn --name N --cli claude|codex --cwd DIR [--task T] [-- ARGS...]
+  spawn --name N --cli claude|codex|pi --cwd DIR [--task T] [-- ARGS...]
                            open a worker tab; print its window ID
   interrupt ID             send Escape to a worker window
   close ID                 close a worker window
@@ -136,10 +136,20 @@ Each line has the time, task, node, parent, repository ID, CLI and its
 version, models, status, report and wall seconds since `CREW_STARTED_AT`.
 It also has the session's own durations and tokens: input, cache read, cache
 write, output and reasoning. Cost comes from Claude Code's own total. For
-Codex, it comes from a price table when the table lists the model;
-otherwise it is null. `cost_source` says which applies. The package ships
+Codex, it comes from a price table when the table lists the model. Pi cost
+comes from its recorded per-message estimates. Missing or invalid Pi costs
+remain null. `cost_source` is `claude`, `price_table`, `pi` or `unavailable`.
+Pi reports estimated costs. Subscription limits and actual charges can differ.
+The package ships
 `skills/nodes/prices.json`; `$CREW_HOME/prices.json` overrides it per
 machine, for example with Vertex prices at work.
+
+Pi workers use only the session directory selected at launch:
+`$CREW_RUNS/<task>/pi/<window>-<started>`. The launcher validates the task,
+window ID and start time, then refuses to reuse an existing directory. The
+collector requires one JSONL file and reads `session_id` from its header
+`id`. It gets `cli_version` from `pi --version`. Header `version` means the
+file format.
 
 Metrics hold numbers and identifiers, never prompts, code or output. They
 stay on the machine with the rest of `$CREW_HOME`. A metrics failure never
@@ -176,15 +186,11 @@ The human's Claude Code session keeps its prompts.
 A settings rule allows `crew-nodes` without a prompt.
 The human's Codex session runs with `--sandbox danger-full-access`.
 
-The human decided that workers run without prompts by default.
+Workers run without confirmation prompts.
 Claude Code workers get `--dangerously-skip-permissions`.
 Codex workers get `--dangerously-bypass-approvals-and-sandbox`.
-The human can require prompts with `CREW_UNATTENDED_WORKERS=0`.
-Then Claude Code workers keep prompts, with the settings rule for
-`crew-nodes`, and Codex workers run with `--sandbox danger-full-access`.
+Pi 0.75.4 has no permission prompts and needs no bypass flag.
 Codex's sandbox blocks the Kitty socket, so a sandboxed worker cannot report.
-At startup, the human's session states whether workers run without prompts
-and how to change it.
 
 Never pass model, provider or credential settings.
 Each CLI keeps the human's configuration, including Vertex endpoints.

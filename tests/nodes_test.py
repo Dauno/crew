@@ -227,6 +227,39 @@ class NodesTest(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
+    @staticmethod
+    def pi_frame(
+        editor_rows=("\u001b[7m \u001b[27m",),
+        history="",
+        context="0.0%/0 (auto) unknown",
+        extension_status=None,
+    ):
+        border = "\u001b[m\u001b[38:2:80:80:80m" + "─" * 40
+        rows = []
+        if history:
+            rows.append(history)
+        rows.append(border)
+        rows.extend(editor_rows)
+        rows.extend((
+            border,
+            "\u001b[m/tmp/synthetic-project",
+            "\u001b[m" + context,
+        ))
+        if extension_status is not None:
+            rows.append(extension_status)
+        return "\n".join(rows)
+
+    @staticmethod
+    def pi_custom_frame(top_border, bottom_border, autocomplete_rows=()):
+        return "\n".join((
+            top_border,
+            "synthetic human draft",
+            bottom_border,
+            *autocomplete_rows,
+            "/tmp/synthetic-project",
+            "0.0%/200k (auto) model",
+        ))
+
     def install_metrics(self, content):
         path = self.script_dir / "metrics.sh"
         path.write_text(content, encoding="utf-8")
@@ -329,6 +362,259 @@ class NodesTest(unittest.TestCase):
                     "send", "8", "--enter", input_text="test message", env=env
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_codex_empty_prompt_ignores_plain_footer_rows(self):
+        fixture_path = ROOT / "tests/fixtures/codex-empty-prompt.json"
+        fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+        env = self.enable_test_waits(self.env.copy(), send=1)
+        env["FAKE_KITTEN_TEXT"] = fixture["ansi"]
+        result = self.run_helper(
+            "send", "8", "--enter", input_text="synthetic notice", env=env
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            [call["stdin"] for call in self.calls()
+             if "send-text" in call["args"]],
+            ["synthetic notice", "\r"],
+        )
+
+    def test_pi_border_editor_input_states(self):
+        fixtures = {
+            "empty beside old prompt text": (
+                self.pi_frame(
+                    history="\u001b[m❯ old transcript prompt text"
+                ),
+                "clear",
+            ),
+            "typed colored text": (
+                self.pi_frame((
+                    "\u001b[38:2:102:102:102msynthetic human draft",
+                )),
+                "busy",
+            ),
+            "multiline draft": (
+                self.pi_frame(("first synthetic line", "second line")),
+                "busy",
+            ),
+            "working command keeps blank editor": (
+                self.pi_frame(
+                    history="\u001b[m⠴ Running synthetic command"
+                ),
+                "clear",
+            ),
+            "blank rows below the footer": (
+                self.pi_frame() + "\n" * 4,
+                "clear",
+            ),
+            "prior command border above empty editor": (
+                "─" * 40 + "\nEarlier Pi output\n"
+                + self.pi_frame(),
+                "clear",
+            ),
+            "compact context window count": (
+                self.pi_frame(context="0.0%/200k (auto) unknown"),
+                "clear",
+            ),
+            "million token context window count": (
+                self.pi_frame(context="0.0%/1.0M (auto) unknown"),
+                "clear",
+            ),
+            "used session stats": (
+                self.pi_frame(
+                    context=(
+                        "↑1.2k ↓300 R5.0k $0.012 "
+                        "3.2%/200k (auto) model"
+                    )
+                ),
+                "clear",
+            ),
+            "subscription zero cost": (
+                self.pi_frame(
+                    context="↑1.2k ↓300 $0.000 (sub) 3.2%/200k model"
+                ),
+                "clear",
+            ),
+            "unknown context percentage after compaction": (
+                self.pi_frame(context="?/200k (auto) model"),
+                "clear",
+            ),
+            "warning colored context percentage": (
+                self.pi_frame(
+                    context=(
+                        "↑1.2k $0.012 "
+                        "\u001b[38:2:255:200:0m75.0%/200k\u001b[39m model"
+                    )
+                ),
+                "clear",
+            ),
+            "error colored context percentage": (
+                self.pi_frame(
+                    context=(
+                        "↑1.2k $0.012 "
+                        "\u001b[38:2:255:100:100m95.0%/200k\u001b[39m model"
+                    )
+                ),
+                "clear",
+            ),
+            "context without auto indicator": (
+                self.pi_frame(context="3.2%/200k model"),
+                "clear",
+            ),
+            "extension status row": (
+                self.pi_frame(
+                    context="3.2%/200k (auto) model",
+                    extension_status="\u001b[2mtest extension status",
+                ),
+                "clear",
+            ),
+            "overlay content": (
+                "\u001b[m" + "─" * 40 + "\n"
+                "\u001b[m> \u001b[7m \u001b[27m\n"
+                "\u001b[38:2:138:190:183m↕ Auto-compact"
+                "          \u001b[39mtrue\n"
+                "\u001b[m  Show images             true\n"
+                "\u001b[m  Image width             60\n"
+                "\u001b[m\n"
+                "\u001b[2mAutomatically compact context"
+                " when it gets too large\n"
+                "\u001b[2mType to search · Enter/Space"
+                " to change · Esc to cancel\n"
+                "\u001b[m" + "─" * 40 + "\n"
+                "\u001b[m/tmp/synthetic-project\n"
+                "\u001b[m0.0%/200k (auto) model",
+                "busy",
+            ),
+            "incomplete frame": (
+                "─" * 40 + "\n\n/tmp/synthetic-project\n"
+                "0.0%/0 (auto) unknown",
+                "unknown",
+            ),
+            "old horizontal box without footer": (
+                "─" * 40 + "\n\n" + "─" * 40,
+                "unknown",
+            ),
+        }
+        for label, (fixture, expected) in fixtures.items():
+            with self.subTest(label=label):
+                self.log.write_text("", encoding="utf-8")
+                env = self.enable_test_waits(self.env.copy(), send=1)
+                env["FAKE_KITTEN_TEXT"] = fixture
+                result = self.run_helper(
+                    "send", "8", "--enter", input_text="synthetic notice",
+                    env=env,
+                )
+                sent = [call["stdin"] for call in self.calls()
+                        if "send-text" in call["args"]]
+                if expected == "clear":
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(sent, ["synthetic notice", "\r"])
+                else:
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("input stayed occupied", result.stderr)
+                    self.assertEqual(sent, [])
+
+    def test_pi_unrecognized_footer_does_not_fall_through_to_other_markers(
+        self,
+    ):
+        histories = {
+            "Claude": "\u001b[m❯ \u001b[2msome dim transcript line",
+            "Codex": "\u001b[m  › \u001b[2mdim transcript line",
+        }
+        for label, history in histories.items():
+            with self.subTest(label=label):
+                env = self.enable_test_waits(self.env.copy(), send=1)
+                env["FAKE_KITTEN_TEXT"] = self.pi_frame(
+                    ("synthetic human draft",),
+                    history=history,
+                    context="unrecognized stats row",
+                )
+                result = self.run_helper(
+                    "send", "8", "--enter", input_text="synthetic notice",
+                    env=env,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("input stayed occupied", result.stderr)
+                self.assertEqual(
+                    [call for call in self.calls()
+                     if "send-text" in call["args"]],
+                    [],
+                )
+
+    def test_pi_scroll_borders_and_autocomplete_fail_closed(self):
+        solid = "─" * 40
+        scroll_up = "─── ↑ 2 more " + "─" * 20
+        scroll_down = "─── ↓ 1 more " + "─" * 20
+        histories = {
+            "Claude": "\n".join((
+                "\u001b[38:2:128:128:128m " + solid,
+                "\u001b[38:2:128:128:128m ❯ ",
+                "\u001b[38:2:128:128:128m " + solid,
+            )),
+            "Codex": (
+                "\u001b[38:2:128:128:128m › "
+                "\u001b[2mTry a synthetic command"
+            ),
+        }
+        layouts = {
+            "scroll-up": self.pi_custom_frame(scroll_up, solid),
+            "scroll-down": self.pi_custom_frame(solid, scroll_down),
+            "autocomplete": self.pi_custom_frame(
+                solid,
+                solid,
+                autocomplete_rows=(
+                    "  /help  Show help",
+                    "  /model Select model",
+                ),
+            ),
+        }
+        fixtures = [
+            ("Claude", "scroll-up", layouts["scroll-up"]),
+            ("Claude", "scroll-down", layouts["scroll-down"]),
+            ("Claude", "autocomplete", layouts["autocomplete"]),
+            ("Codex", "scroll-up", layouts["scroll-up"]),
+            ("Codex", "autocomplete", layouts["autocomplete"]),
+        ]
+        for history_name, layout_name, frame in fixtures:
+            with self.subTest(history=history_name, layout=layout_name):
+                self.log.write_text("", encoding="utf-8")
+                env = self.enable_test_waits(self.env.copy(), send=1)
+                env["FAKE_KITTEN_TEXT"] = (
+                    histories[history_name] + "\n" + frame
+                )
+                result = self.run_helper(
+                    "send", "8", "--enter", input_text="synthetic notice",
+                    env=env,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("input stayed occupied", result.stderr)
+                self.assertEqual(
+                    [call for call in self.calls()
+                     if "send-text" in call["args"]],
+                    [],
+                )
+
+    def test_pi_send_rechecks_the_editor_before_typing(self):
+        clear = self.pi_frame()
+        busy = self.pi_frame(("synthetic human draft",))
+        sequence_path = self.root / "input-sequence.json"
+        sequence_path.write_text(
+            json.dumps([clear, busy, clear, clear]), encoding="utf-8"
+        )
+        env = self.enable_test_waits(self.env.copy(), send=2)
+        env["FAKE_KITTEN_SEQUENCE_FILE"] = str(sequence_path)
+        env["FAKE_KITTEN_SEQUENCE_COUNTER"] = str(self.root / "input-count")
+        result = self.run_helper(
+            "send", "8", "--enter", input_text="synthetic notice", env=env
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        send_index = next(
+            index for index, call in enumerate(calls)
+            if "send-text" in call["args"]
+        )
+        self.assertGreaterEqual(
+            sum("get-text" in call["args"] for call in calls[:send_index]), 4
+        )
 
     def test_send_enter_waits_until_occupied_input_is_cleared(self):
         input_path = self.write_input("\u001b[m❯ review the build result")
@@ -498,55 +784,72 @@ class NodesTest(unittest.TestCase):
     def test_notify_detached_sender_keeps_notice_until_delivery(self):
         report = self.root / "report.md"
         report.write_text("completed\n", encoding="utf-8")
-        input_path = self.write_input("\u001b[m❯ human is still writing")
-        env = self.enable_test_waits(
-            self.notify_environment(), send=2, notice=5
-        )
-        env["FAKE_KITTEN_TEXT_FILE"] = str(input_path)
-        started = time.monotonic()
-        result = self.run_helper("notify", "done", str(report), env=env)
-        elapsed = time.monotonic() - started
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertGreaterEqual(elapsed, 0.8)
-        self.assertLess(elapsed, 5)
-        notices = self.root / "runs" / "crew-v1" / "notices"
-        pending = [
-            path for path in notices.glob("notice.*")
-            if not path.name.endswith(".status")
-        ]
-        self.assertEqual(len(pending), 1)
-        expected = (
-            f"crew-v1/worker: done. Report: {report}. "
-            "Metrics: metrics unavailable"
-        )
-        self.assertEqual(
-            pending[0].read_text(encoding="utf-8").strip(), expected
-        )
-        launch_call = next(
-            call for call in self.calls()
-            if "launch" in call["args"]
-            and "--type=background" in call["args"]
-        )
-        for value in (
-            "--allow-remote-control",
-            "--copy-env",
-            "CREW_PARENT=7",
-            "CREW_NODES_TESTING=1",
-            "CREW_NODES_TEST_NOTICE_WAIT_SECONDS=5",
-            f"CREW_NOTICE_PENDING={pending[0]}",
-        ):
-            self.assertIn(value, launch_call["args"])
+        drafts = {
+            "claude": "\u001b[m❯ human is still writing",
+            "pi": self.pi_frame(("human is still writing",)),
+        }
+        for cli, draft in drafts.items():
+            with self.subTest(cli=cli):
+                self.log.write_text("", encoding="utf-8")
+                input_path = self.write_input(draft)
+                env = self.enable_test_waits(
+                    self.notify_environment(), send=2, notice=5
+                )
+                env["CREW_CLI"] = cli
+                env["FAKE_KITTEN_TEXT_FILE"] = str(input_path)
+                started = time.monotonic()
+                result = self.run_helper(
+                    "notify", "done", str(report), env=env
+                )
+                elapsed = time.monotonic() - started
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertGreaterEqual(elapsed, 0.8)
+                self.assertLess(elapsed, 5)
+                notices = self.root / "runs" / "crew-v1" / "notices"
+                pending = [
+                    path for path in notices.glob("notice.*")
+                    if not path.name.endswith(".status")
+                ]
+                self.assertEqual(len(pending), 1)
+                expected = (
+                    f"crew-v1/worker: done. Report: {report}. "
+                    "Metrics: metrics unavailable"
+                )
+                self.assertEqual(
+                    pending[0].read_text(encoding="utf-8").strip(),
+                    expected,
+                )
+                self.assertIn("human is still writing", input_path.read_text())
+                launch_call = next(
+                    call for call in self.calls()
+                    if "launch" in call["args"]
+                    and "--type=background" in call["args"]
+                )
+                for value in (
+                    "--allow-remote-control",
+                    "--copy-env",
+                    "CREW_PARENT=7",
+                    "CREW_NODES_TESTING=1",
+                    "CREW_NODES_TEST_NOTICE_WAIT_SECONDS=5",
+                    f"CREW_NOTICE_PENDING={pending[0]}",
+                ):
+                    self.assertIn(value, launch_call["args"])
 
-        input_path.write_text(
-            "\u001b[m❯ \u001b[22;2mTry a sample task",
-            encoding="utf-8",
-        )
-        deadline = time.monotonic() + 6
-        while pending[0].exists() and time.monotonic() < deadline:
-            time.sleep(0.05)
-        self.assertFalse(pending[0].exists())
-        calls = [call for call in self.calls() if "send-text" in call["args"]]
-        self.assertEqual([call["stdin"] for call in calls], [expected, "\r"])
+                clear = self.pi_frame() if cli == "pi" else (
+                    "\u001b[m❯ \u001b[22;2mTry a sample task"
+                )
+                input_path.write_text(clear, encoding="utf-8")
+                deadline = time.monotonic() + 6
+                while pending[0].exists() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                self.assertFalse(pending[0].exists())
+                calls = [
+                    call for call in self.calls()
+                    if "send-text" in call["args"]
+                ]
+                self.assertEqual(
+                    [call["stdin"] for call in calls], [expected, "\r"]
+                )
 
     def test_detached_sender_leaves_notice_after_its_wait_limit(self):
         pending_dir = self.root / "runs" / "crew-v1" / "notices"
@@ -718,6 +1021,32 @@ class NodesTest(unittest.TestCase):
                 "two words",
                 "--literal=three words",
             ],
+        )
+
+    def test_spawn_supports_pi_labels_and_argument_forwarding(self):
+        result = self.run_helper(
+            "spawn", "--name", "pi-worker", "--cli", "pi",
+            "--cwd", str(self.work), "--task", "crew-v1", "--",
+            "--offline", "two words",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.calls()[-1]["args"]
+        for value in (
+            "CREW_CLI=pi",
+            "CREW_ROLE=worker",
+            "CREW_NODE=pi-worker",
+            "CREW_TASK=crew-v1",
+            "CREW_PARENT=7",
+            "pi-worker · pi",
+            "crew_cli=pi",
+            "crew_node=pi-worker",
+            "crew_role=worker",
+            "crew_task=crew-v1",
+            str(self.crew_bin),
+        ):
+            self.assertIn(value, args)
+        self.assertEqual(
+            args[-4:], [str(self.crew_bin), "pi", "--offline", "two words"]
         )
 
     def test_close_uses_an_exact_numeric_id(self):

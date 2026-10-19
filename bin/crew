@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  printf 'Usage: crew claude [args] | crew codex [args]\n' >&2
+  printf 'Usage: crew claude|codex|pi [args]\n' >&2
 }
 
 if (($# == 0)); then
@@ -13,7 +13,7 @@ fi
 cli_name=$1
 shift
 case "$cli_name" in
-  claude | codex) ;;
+  claude | codex | pi) ;;
   *)
     usage
     exit 2
@@ -193,7 +193,7 @@ PY
     claude_args+=(--dangerously-skip-permissions)
   fi
   claude "${claude_args[@]}" "$@"
-else
+elif [[ $cli_name == codex ]]; then
   developer_instructions=$(python3 - "$instructions_file" <<'PY'
 import json
 import pathlib
@@ -209,4 +209,35 @@ PY
     codex_args+=(--dangerously-bypass-approvals-and-sandbox)
   fi
   codex "${codex_args[@]}" "$@"
+else
+  pi_args=(
+    --append-system-prompt "$instructions_file"
+    --skill "$CREW_SKILLS"
+  )
+  if [[ ${CREW_ROLE:-} == worker ]]; then
+    pi_task=${CREW_TASK:-_untasked}
+    [[ -n $pi_task && $pi_task != . && $pi_task != .. &&
+      $pi_task != */* && $pi_task != *$'\n'* &&
+      $pi_task != *$'\r'* ]] || {
+      printf 'crew: invalid task path component for Pi worker.\n' >&2
+      exit 2
+    }
+    [[ ${KITTY_WINDOW_ID:-} =~ ^[1-9][0-9]*$ ]] || {
+      printf 'crew: Pi worker requires a numeric KITTY_WINDOW_ID.\n' >&2
+      exit 2
+    }
+    [[ ${CREW_STARTED_AT:-} =~ ^[1-9][0-9]*$ ]] || {
+      printf 'crew: Pi worker requires a numeric CREW_STARTED_AT.\n' >&2
+      exit 2
+    }
+    pi_session_dir="$CREW_RUNS/$pi_task/pi/${KITTY_WINDOW_ID}-${CREW_STARTED_AT}"
+    mkdir -p "$(dirname -- "$pi_session_dir")"
+    if ! mkdir -- "$pi_session_dir"; then
+      printf 'crew: Pi worker session directory already exists: %s\n' \
+        "$pi_session_dir" >&2
+      exit 1
+    fi
+    pi_args+=(--session-dir "$pi_session_dir")
+  fi
+  pi "${pi_args[@]}" "$@"
 fi

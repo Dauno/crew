@@ -28,6 +28,8 @@ done
 command -v jq >/dev/null 2>&1 || fail 'jq is required'
 
 cli=${CREW_CLI:-}
+session=''
+pi_version=''
 case "$cli" in
     claude)
         session=${CLAUDE_CODE_SESSION_ID:-}
@@ -39,17 +41,60 @@ case "$cli" in
         log_root=$HOME/.codex/sessions
         pattern="rollout-*-$session.jsonl"
         ;;
-    *) fail 'CREW_CLI must be claude or codex' ;;
+    pi)
+        task=${CREW_TASK:-_untasked}
+        [[ -n $task && $task != . && $task != .. &&
+            $task != */* && $task != *$'\n'* && $task != *$'\r'* ]] ||
+            fail 'missing or invalid task path component'
+        [[ ${KITTY_WINDOW_ID:-} =~ ^[1-9][0-9]*$ ]] ||
+            fail 'missing or invalid Kitty window ID'
+        [[ ${CREW_STARTED_AT:-} =~ ^[1-9][0-9]*$ ]] ||
+            fail 'missing or invalid worker start time'
+        runs_dir=${CREW_RUNS:-${CREW_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/crew}/runs}
+        log_root="$runs_dir/$task/pi/${KITTY_WINDOW_ID}-${CREW_STARTED_AT}"
+        if ! pi_version=$(pi --version 2>&1); then
+            fail 'could not read Pi version'
+        fi
+        [[ $pi_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+            fail 'Pi returned an invalid version'
+        ;;
+    *) fail 'CREW_CLI must be claude, codex or pi' ;;
 esac
-# Never allow path traversal or glob metacharacters in a session selector.
-[[ -n $session && $session != *[!a-zA-Z0-9_-]* ]] ||
-    fail 'missing or invalid session ID'
 [[ -d $log_root ]] || fail 'CLI log directory is missing'
 log=
-while IFS= read -r -d '' candidate; do
-    [[ -z $log ]] || fail 'session log is ambiguous'
-    log=$candidate
-done < <(find "$log_root" -type f -name "$pattern" -print0 2>/dev/null)
+if [[ $cli == pi ]]; then
+    shopt -s nullglob
+    pi_candidates=("$log_root"/*.jsonl)
+    shopt -u nullglob
+    for candidate in "${pi_candidates[@]}"; do
+        [[ -f $candidate && ! -L $candidate ]] || continue
+        [[ -z $log ]] || fail 'session log is ambiguous'
+        log=$candidate
+    done
+    [[ -n $log && -r $log ]] || fail 'session log is missing or unreadable'
+    if ! session=$(head -n 1 "$log" | jq -er '
+        def valid_stamp:
+          if type == "string" then
+            (try (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)
+             catch null) != null
+          else false end;
+        select(type == "object" and .type == "session" and .version == 3
+          and (.id | type == "string" and
+               test("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"))
+          and (.timestamp | valid_stamp)
+          and (.cwd | type == "string")) | .id
+    ' 2>/dev/null); then
+        fail 'Pi session header is invalid'
+    fi
+else
+    # Never allow path traversal or glob metacharacters in a session selector.
+    [[ -n $session && $session != *[!a-zA-Z0-9_-]* ]] ||
+        fail 'missing or invalid session ID'
+    while IFS= read -r -d '' candidate; do
+        [[ -z $log ]] || fail 'session log is ambiguous'
+        log=$candidate
+    done < <(find "$log_root" -type f -name "$pattern" -print0 2>/dev/null)
+fi
 [[ -n $log && -r $log ]] || fail 'session log is missing or unreadable'
 
 crew_home=${CREW_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/crew}
@@ -67,6 +112,7 @@ time=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 # Retain only numeric usage, model IDs, versions, session IDs and timestamps.
 record=$(jq -Rnc \
     --arg cli "$cli" --arg session "$session" \
+    --arg pi_version "$pi_version" \
     --arg time "$time" --argjson now "$now" \
     --arg started "${CREW_STARTED_AT:-}" \
     --arg task "${CREW_TASK:-}" --arg node "${CREW_NODE:-}" \
@@ -106,6 +152,11 @@ record=$(jq -Rnc \
          cache_write: (.cache_write_input_tokens | num),
          output: (.output_tokens | num),
          reasoning: (.reasoning_output_tokens | num)};
+    def pi_tokens:
+        {input: ((.input | num) + (.cacheRead | num) + (.cacheWrite | num)),
+         cache_read: (.cacheRead | num),
+         cache_write: (.cacheWrite | num),
+         output: (.output | num), reasoning: 0};
     def by_model($responses):
         reduce ($responses[]?) as $r ({};
             .[$r.model] = add((.[$r.model] // zero); $r.tokens));
@@ -127,7 +178,7 @@ record=$(jq -Rnc \
     reduce (inputs | fromjson? | select(type == "object")) as $r
         ({cs:null, responses:{}, cumulative:null, model:"unknown",
           models:{}, first:null, last:null, version:null,
-          valid:false, index:0};
+          valid:false, header:false, index:0};
          .index += 1
          | ($r.timestamp | epoch) as $stamp
          | if $stamp != null then
@@ -162,7 +213,7 @@ record=$(jq -Rnc \
                              tokens: ($r.message.usage | message_tokens)}
                      else . end
                end
-           else
+           elif $cli == "codex" then
                if $r.type == "session_meta" then
                    if $r.payload.id != $session then error("session mismatch")
                    else
@@ -190,12 +241,36 @@ record=$(jq -Rnc \
                    | .cumulative = ($r.payload.info.total_token_usage
                                     | codex_tokens)
                else . end
+           else
+               if $r.type == "session" then
+                   if .header or .index != 1 or $r.id != $session or
+                      $r.version != 3 then error("invalid Pi header")
+                   else .header = true | .version = $pi_version end
+               elif $r.type == "message"
+                    and $r.message.role == "assistant"
+                    and ($r.message.usage | type) == "object" then
+                   if ($r.id | type) != "string" or $r.id == "" then
+                       error("Pi entry has no ID")
+                   else
+                       .valid = true
+                       | ($r.id) as $id
+                       | .responses[$id] = {
+                           model: (($r.message.model | text) // "unknown"),
+                           tokens: ($r.message.usage | pi_tokens),
+                           cost: ($r.message.usage.cost.total | nullable_num)
+                         }
+                   end
+               else . end
            end)
     | if .valid | not then error("no session usage") else . end
+    | if $cli == "pi" and (.header | not) then
+          error("Pi session header is missing") else . end
     | (if $cli == "claude" then
            if (.cs.usage // {} | length) > 0 then
                {usage:.cs.usage, source:"cost_state"}
            else {usage:by_model(.responses), source:"message_usage"} end
+       elif $cli == "pi" then
+           {usage:by_model(.responses), source:"message_usage"}
        elif (.responses | length) > 0 then
            {usage:by_model(.responses), source:"token_usage_record"}
        else
@@ -205,6 +280,10 @@ record=$(jq -Rnc \
        end) as $data
     | (total($data.usage)) as $tokens
     | (if $cli == "claude" then .cs.cost
+       elif $cli == "pi" then
+           ([.responses[] | .cost] as $costs
+            | if ($costs | length) == 0 or any($costs[]; . == null)
+              then null else ($costs | add) end)
        else priced($data.usage) end) as $cost
     | {time:$time, task:$task, node:$node, parent:$parent, repo_id:$repo,
        cli:$cli, cli_version:.version, session_id:$session,
@@ -221,6 +300,7 @@ record=$(jq -Rnc \
        cost_usd:$cost,
        cost_source:(if $cost == null then "unavailable"
                     elif $cli == "claude" then "claude"
+                    elif $cli == "pi" then "pi"
                     else "price_table" end),
        usage_source:$data.source}
     ' < "$log" 2>/dev/null) || fail 'could not extract session usage'
