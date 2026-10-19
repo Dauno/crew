@@ -28,6 +28,12 @@ Task: example. Please finish the assigned work and report to the coordinator.
 MESSAGE
 bash /absolute/path/from/Nodes-helper spawn --name reviewer \
   --cli claude --cwd /path/to/repository --task example
+bash /absolute/path/from/Nodes-helper spawn --name haiku \
+  --cli claude --cwd /path/to/repository --task example \
+  -- --model claude-haiku-5-5
+bash /absolute/path/from/Nodes-helper spawn --name codex-model \
+  --cli codex --cwd /path/to/repository --task example \
+  -- -m gpt-6-luna
 bash /absolute/path/from/Nodes-helper interrupt 456
 bash /absolute/path/from/Nodes-helper close 456
 ```
@@ -116,6 +122,9 @@ Do not close a busy or unrelated window.
 `spawn` requires `CREW_BIN` and a running Kitty window. It creates a worker
 tab with the selected CLI, task labels and parent window ID. It prints the new
 ID. Keep the worker's task, repository and report path explicit in its brief.
+Pass CLI arguments after `--` only when the human requests a model or option.
+By default, each worker uses its CLI's default model. A brief alone does not
+change a model; pass the requested model in the `spawn` command.
 
 After a task, send one notice to the coordinator. Include the report path,
 completed work, checks, limits and unresolved decisions in that report.

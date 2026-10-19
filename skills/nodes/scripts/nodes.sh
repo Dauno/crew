@@ -7,7 +7,7 @@ Usage: nodes.sh COMMAND [ARGS]
   list                         List Kitty windows as JSON lines.
   read ID [screen|all]         Read a window's text.
   send ID [--enter]            Send standard input to a window.
-  spawn --name N --cli CLI --cwd DIR [--task T]
+  spawn --name N --cli CLI --cwd DIR [--task T] [-- ARGS...]
                                Open a worker tab and print its window ID.
   interrupt ID                 Send Escape to a worker window.
   close ID                     Close a worker window by exact ID.
@@ -147,12 +147,14 @@ send_text() {
 
 spawn_node() {
   local name='' cli='' cwd='' task=${CREW_TASK:-} reply directory_error
+  local -a extra_args=()
   while [[ $# -gt 0 ]]; do
     case $1 in
       --name) [[ $# -ge 2 ]] || usage; name=$2; shift 2 ;;
       --cli) [[ $# -ge 2 ]] || usage; cli=$2; shift 2 ;;
       --cwd) [[ $# -ge 2 ]] || usage; cwd=$2; shift 2 ;;
       --task) [[ $# -ge 2 ]] || usage; task=$2; shift 2 ;;
+      --) shift; extra_args=("$@"); break ;;
       *) die "unknown spawn argument: $1" ;;
     esac
   done
@@ -182,7 +184,7 @@ spawn_node() {
     --var crew_role=worker \
     --var "crew_task=$task" \
     --var "crew_parent=$KITTY_WINDOW_ID" \
-    "$CREW_BIN" "$cli" 2>&1); then
+    "$CREW_BIN" "$cli" "${extra_args[@]}" 2>&1); then
     die "Kitty could not spawn $cli: $reply"
   fi
   reply=${reply//$'\r'/}

@@ -278,8 +278,40 @@ class NodesTest(unittest.TestCase):
             "codex",
         ):
             self.assertIn(value, args)
+        self.assertEqual(args[-2:], [str(self.crew_bin), "codex"])
         self.assertFalse(self.calls()[-1]["hyprland_set"])
         self.assertFalse(self.calls()[-1]["runtime_set"])
+
+    def test_spawn_passes_cli_args_in_order_without_splitting(self):
+        result = self.run_helper(
+            "spawn",
+            "--name",
+            "haiku",
+            "--cli",
+            "claude",
+            "--cwd",
+            str(self.work),
+            "--",
+            "--model",
+            "claude-haiku-5-5",
+            "--option",
+            "two words",
+            "--literal=three words",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.calls()[-1]["args"]
+        self.assertEqual(
+            args[-7:],
+            [
+                str(self.crew_bin),
+                "claude",
+                "--model",
+                "claude-haiku-5-5",
+                "--option",
+                "two words",
+                "--literal=three words",
+            ],
+        )
 
     def test_close_uses_an_exact_numeric_id(self):
         result = self.run_helper("close", "8")

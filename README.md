@@ -33,11 +33,13 @@ Helper reference:
 
 ```sh
 bash "$CREW_SKILLS/nodes/scripts/nodes.sh" spawn \
-  --name reviewer --cli claude --cwd "$PWD" --task review
+  --name reviewer --cli claude --cwd "$PWD" --task review [-- ARGS...]
 ```
 
 `--task` takes a short label, such as `review`. It identifies the task in
-`$CREW_RUNS/<task>/` and the worker's `CREW_TASK` variable.
+`$CREW_RUNS/<task>/` and the worker's `CREW_TASK` variable. Arguments after
+`--` pass unchanged to the CLI. Pass them only when the human requests a model
+or option; otherwise, workers use their CLI's default model.
 
 ## Memory and permissions
 

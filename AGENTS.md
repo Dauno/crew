@@ -91,7 +91,7 @@ bash "$CREW_SKILLS/nodes/scripts/nodes.sh" <command>
   list                     one JSON object per window in this Kitty
   read ID [screen|all]     print a window's text
   send ID [--enter]        send standard input; --enter adds Return
-  spawn --name N --cli claude|codex --cwd DIR [--task T]
+  spawn --name N --cli claude|codex --cwd DIR [--task T] [-- ARGS...]
                            open a worker tab; print its window ID
   interrupt ID             send Escape to a worker window
   close ID                 close a worker window
@@ -106,6 +106,8 @@ It titles the tab `<name> · <cli>`.
 It sets `CREW_ROLE=worker`, `CREW_NODE`, `CREW_TASK` and `CREW_PARENT`.
 It labels the tab with `crew_node`, `crew_cli`, `crew_role`, `crew_task`
 and `crew_parent` user variables, then runs `"$CREW_BIN" <cli>`.
+Arguments after `--` go to that CLI unchanged, for example a model flag.
+Agents pass them only when the human asks; by default workers get none.
 
 ### Runs
 
