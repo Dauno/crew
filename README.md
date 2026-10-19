@@ -32,7 +32,7 @@ tabs. Workers send completion notices to their parent.
 Helper reference:
 
 ```sh
-bash "$CREW_SKILLS/nodes/scripts/nodes.sh" spawn \
+crew-nodes spawn \
   --name reviewer --cli claude --cwd "$PWD" --task review [-- ARGS...]
 ```
 

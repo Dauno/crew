@@ -62,6 +62,7 @@
               runHook preInstall
               mkdir -p "$out/bin" "$out/libexec" "$out/share/crew"
               cp bin/crew "$out/libexec/crew"
+              cp bin/crew-nodes "$out/libexec/crew-nodes"
               cp -R core "$out/share/crew/core"
               cp -R skills "$out/share/crew/skills"
               cp -R claude/. "$out/share/crew/claude-plugin/"
@@ -74,6 +75,10 @@
                 "$out/share/crew/core/instructions.md" \
                 --set CREW_SKILLS "$out/share/crew/skills" \
                 --set CREW_PLUGIN "$out/share/crew/claude-plugin"
+              makeWrapper "$out/libexec/crew-nodes" "$out/bin/crew-nodes" \
+                --prefix PATH : "${pkgs.lib.makeBinPath runtimeInputs}" \
+                --set CREW_NODES_SCRIPT \
+                "$out/share/crew/skills/nodes/scripts/nodes.sh"
               runHook postInstall
             '';
           };
@@ -97,7 +102,7 @@
               find skills -type f -path '*/scripts/*.sh' \
                 -print 2>/dev/null
             )
-            shellcheck bin/crew "''${shell_scripts[@]}"
+            shellcheck bin/crew bin/crew-nodes "''${shell_scripts[@]}"
             touch "$out"
           '';
         in

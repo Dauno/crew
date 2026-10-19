@@ -6,7 +6,9 @@ usage() {
 Usage: nodes.sh COMMAND [ARGS]
   list                         List Kitty windows as JSON lines.
   read ID [screen|all]         Read a window's text.
-  send ID [--enter]            Send standard input to a window.
+  send ID [--enter]            Send nonempty standard input to a window.
+  send ID --enter-only         Send only Return; do not read standard input.
+  notify STATUS REPORT         Send a worker notice to its parent.
   spawn --name N --cli CLI --cwd DIR [--task T] [-- ARGS...]
                                Open a worker tab and print its window ID.
   interrupt ID                 Send Escape to a worker window.
@@ -114,35 +116,69 @@ read_window() {
   kitty_remote get-text --match "id:$id" --extent "$extent"
 }
 
+kitty_send_text() {
+  local id=$1 text=$2
+  printf '%s' "$text" | kitty_remote send-text --match "id:$id" --stdin
+}
+
+send_and_enter() {
+  local id=$1 text=$2
+  kitty_send_text "$id" "$text"
+  sleep 0.5
+  kitty_send_text "$id" $'\r'
+}
+
 send_text() {
-  local id=${1:-} enter=0 text
+  local id=${1:-} enter=0 enter_only=0 text
   [[ $# -ge 1 && $# -le 2 ]] || usage
-  [[ ${2:-} != --enter ]] || enter=1
-  [[ -z ${2:-} || $enter == 1 ]] || usage
+  case ${2:-} in
+    '') ;;
+    --enter) enter=1 ;;
+    --enter-only) enter_only=1 ;;
+    *) usage ;;
+  esac
   valid_id "$id"
   refuse_self send "$id"
   require_window "$id"
 
+  if [[ $enter_only == 1 ]]; then
+    kitty_send_text "$id" $'\r'
+    return
+  fi
+
   text=$(cat; printf '\001')
   text=${text%$'\001'}
   text=${text//$'\r'/}
-  if [[ -z $text && $enter == 0 ]]; then
-    die 'send reads nonempty text from standard input, or use --enter.'
+  if [[ -z $text ]]; then
+    if [[ $enter == 1 ]]; then
+      die 'send --enter requires nonempty input; use --enter-only for Return.'
+    fi
+    die 'send requires nonempty standard input.'
   fi
-
-  write_text() {
-    printf '%s' "$1" | kitty_remote send-text --match "id:$id" --stdin
-  }
 
   if [[ $enter == 1 ]]; then
-    if [[ -n $text ]]; then
-      write_text "$text"
-      sleep 0.5
-    fi
-    write_text $'\r'
+    send_and_enter "$id" "$text"
   else
-    write_text "$text"
+    kitty_send_text "$id" "$text"
   fi
+}
+
+notify_parent() {
+  local status=${1:-} report=${2:-} parent message
+  [[ $# -eq 2 ]] || usage
+  [[ -n $status ]] || die 'notify STATUS must not be empty.'
+  [[ -n ${CREW_TASK:-} ]] || die 'notify requires CREW_TASK.'
+  [[ -n ${CREW_NODE:-} ]] || die 'notify requires CREW_NODE.'
+  [[ -n ${CREW_PARENT:-} ]] || die 'notify requires CREW_PARENT.'
+  [[ -n $report && -f $report ]] ||
+    die "notify REPORT must be an existing file: $report"
+
+  parent=$CREW_PARENT
+  valid_id "$parent"
+  refuse_self notify "$parent"
+  require_window "$parent"
+  message="$CREW_TASK/$CREW_NODE: $status. Report: $report"
+  send_and_enter "$parent" "$message"
 }
 
 spawn_node() {
@@ -223,6 +259,7 @@ case $command_name in
     ;;
   read) read_window "$@" ;;
   send) send_text "$@" ;;
+  notify) notify_parent "$@" ;;
   spawn) spawn_node "$@" ;;
   interrupt) interrupt_window "$@" ;;
   close) close_window "$@" ;;

@@ -29,6 +29,7 @@ unset CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_ENTRYPOINT \
   CODEX_SESSION_ID CODEX_THREAD_ID
 
 source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+export PATH="$source_root/bin:$PATH"
 if command -v realpath >/dev/null 2>&1; then
   default_crew_bin=$(realpath -- "${BASH_SOURCE[0]}")
 else
@@ -173,7 +174,7 @@ done < <(
 )
 printf '%s\n' \
   "- Read relevant skills from the listed SKILL.md paths before acting." \
-  "- Nodes helper: $CREW_SKILLS/nodes/scripts/nodes.sh" \
+  "- Nodes helper: crew-nodes" \
   >> "$instructions_file"
 
 if [[ $cli_name == claude ]]; then
@@ -181,11 +182,9 @@ if [[ $cli_name == claude ]]; then
     --append-system-prompt-file "$instructions_file"
     --plugin-dir "$CREW_PLUGIN"
   )
-  settings=$(python3 \
-    - "$CREW_SKILLS/nodes/scripts/nodes.sh" <<'PY'
+  settings=$(python3 - <<'PY'
 import json
-import sys
-rule = f"Bash(bash {sys.argv[1]} *)"
+rule = "Bash(crew-nodes *)"
 print(json.dumps({"permissions": {"allow": [rule]}}))
 PY
 )

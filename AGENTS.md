@@ -18,6 +18,7 @@ crew is private. It runs on this Linux host and on a macOS work machine.
 - `core/instructions.md`: base instructions that both CLIs receive.
 - `claude/`: the Claude Code adapter, a plugin that carries the skills.
 - `skills/nodes/`: Kitty messaging between agents, with `scripts/nodes.sh`.
+  The package installs it on the PATH as `crew-nodes`.
 - `skills/memory/`: how to read and record decisions and lessons.
 - `skills/onboard/`: how to learn a repository on the first visit.
 - `tests/`: unit tests that `nix flake check` runs.
@@ -86,11 +87,17 @@ The coordinator writes memory. Workers propose entries in their reports.
 
 ### Nodes helper
 
+Every crew session has the helper on its PATH as `crew-nodes`.
+It runs `skills/nodes/scripts/nodes.sh`. Agents call it only by that name,
+never through a path or a shell variable.
+
 ```text
-bash "$CREW_SKILLS/nodes/scripts/nodes.sh" <command>
+crew-nodes <command>
   list                     one JSON object per window in this Kitty
   read ID [screen|all]     print a window's text
-  send ID [--enter]        send standard input; --enter adds Return
+  send ID [--enter]        send nonempty standard input; --enter adds Return
+  send ID --enter-only     send only Return; read no input
+  notify STATUS REPORT     worker notice to its parent, in the notice format
   spawn --name N --cli claude|codex --cwd DIR [--task T] [-- ARGS...]
                            open a worker tab; print its window ID
   interrupt ID             send Escape to a worker window
@@ -101,6 +108,9 @@ IDs are Kitty window IDs within one Kitty instance.
 The helper refuses to send to, interrupt or close its own window.
 `interrupt` and `close` act only on windows labeled `crew_role=worker`.
 `send --enter` sends Return separately, after a 0.5 second pause.
+`send` fails on empty input; only `--enter-only` sends Return alone.
+`notify` needs `CREW_TASK`, `CREW_NODE` and `CREW_PARENT`. It sends
+`<task>/<node>: <STATUS>. Report: <REPORT>` to the parent with Return.
 `spawn` runs `kitten @ launch --type=tab --keep-focus --copy-env`.
 It titles the tab `<name> · <cli>`.
 It sets `CREW_ROLE=worker`, `CREW_NODE`, `CREW_TASK` and `CREW_PARENT`.
@@ -129,7 +139,7 @@ Codex finds the skills through the paths in `## This session`.
 ### Permissions
 
 The human's Claude Code session keeps its prompts.
-A settings rule allows the nodes helper without a prompt.
+A settings rule allows `crew-nodes` without a prompt.
 The human's Codex session runs with `--sandbox danger-full-access`.
 
 Workers keep each CLI's normal prompts by default.

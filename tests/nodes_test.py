@@ -150,6 +150,18 @@ class NodesTest(unittest.TestCase):
             json.loads(line) for line in self.log.read_text().splitlines()
         ]
 
+    def notify_environment(self):
+        env = self.env.copy()
+        env.update(
+            {
+                "KITTY_WINDOW_ID": "8",
+                "CREW_TASK": "crew-v1",
+                "CREW_NODE": "worker",
+                "CREW_PARENT": "7",
+            }
+        )
+        return env
+
     def test_list_emits_one_object_per_window(self):
         result = self.run_helper("list")
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -216,12 +228,66 @@ class NodesTest(unittest.TestCase):
             )
         )
 
-    def test_empty_send_enter_writes_only_return(self):
+    def test_empty_send_enter_fails_with_guidance(self):
         result = self.run_helper("send", "8", "--enter", input_text="")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("use --enter-only", result.stderr)
+        self.assertFalse(
+            any("send-text" in call["args"] for call in self.calls())
+        )
+
+    def test_send_enter_only_sends_return_without_reading_input(self):
+        result = self.run_helper(
+            "send", "8", "--enter-only", input_text="must not be sent"
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = [call for call in self.calls() if "send-text" in call["args"]]
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["stdin"], "\r")
+
+    def test_notify_sends_formatted_notice_to_parent(self):
+        report = self.root / "report.md"
+        report.write_text("completed\n", encoding="utf-8")
+        result = self.run_helper(
+            "notify", "done", str(report), env=self.notify_environment()
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = [call for call in self.calls() if "send-text" in call["args"]]
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            [call["stdin"] for call in calls],
+            [f"crew-v1/worker: done. Report: {report}", "\r"],
+        )
+        self.assertTrue(
+            all(
+                call["args"][-3:] == ["--match", "id:7", "--stdin"]
+                for call in calls
+            )
+        )
+
+    def test_notify_requires_task_node_parent_and_report(self):
+        report = self.root / "report.md"
+        report.write_text("completed\n", encoding="utf-8")
+        for variable in ("CREW_TASK", "CREW_NODE", "CREW_PARENT"):
+            with self.subTest(variable=variable):
+                env = self.notify_environment()
+                env.pop(variable)
+                result = self.run_helper(
+                    "notify", "done", str(report), env=env
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(variable, result.stderr)
+        env = self.notify_environment()
+        result = self.run_helper(
+            "notify", "", str(report), env=env
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("STATUS must not be empty", result.stderr)
+        result = self.run_helper(
+            "notify", "done", str(self.root / "missing.md"), env=env
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("existing file", result.stderr)
 
     def test_send_and_close_refuse_the_own_window(self):
         for command in (("send", "7"), ("close", "7")):

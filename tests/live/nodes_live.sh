@@ -12,6 +12,10 @@ done
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/crew-nodes-live.XXXXXX")
 listen_on="unix:$tmp/kitty.sock"
+mkdir -p "$tmp/bin"
+ln -s "$helper" "$tmp/bin/crew-nodes"
+export PATH="$tmp/bin:$PATH"
+export CREW_LIVE_REPORT="$tmp/report.md"
 kitty_pid=''
 parent_id=''
 node_id=''
@@ -38,6 +42,8 @@ set -euo pipefail
 printf 'marker=%s\n' "${CREW_LIVE_MARKER:-}"
 printf 'role=%s\n' "${CREW_ROLE:-}"
 printf 'task=%s\n' "${CREW_TASK:-}"
+printf 'live report\n' >"${CREW_LIVE_REPORT:?}"
+crew-nodes notify done "$CREW_LIVE_REPORT"
 printf 'parent=%s\n' "${CREW_PARENT:-}"
 printf 'READY\n'
 while IFS= read -r message; do
@@ -50,9 +56,13 @@ FAKE
 chmod +x "$tmp/crew-fake"
 
 export CREW_LIVE_MARKER=crew-live-marker
+export KITTY_LISTEN_ON=$listen_on
+# shellcheck disable=SC2016
 kitty --config NONE -o allow_remote_control=socket-only \
   --listen-on "$listen_on" --start-as=hidden --directory "$tmp" \
-  bash -c 'sleep 300' >"$tmp/kitty.log" 2>&1 &
+  bash -c 'while IFS= read -r line; do
+    printf "PARENT_NOTICE=%s\n" "$line"
+  done' >"$tmp/kitty.log" 2>&1 &
 kitty_pid=$!
 
 ready=0
@@ -77,7 +87,6 @@ parent_id=$(jq -r '.[0].tabs[0].windows[0].id // empty' "$tmp/ls.json")
   exit 1
 }
 
-export KITTY_LISTEN_ON=$listen_on
 export KITTY_WINDOW_ID=$parent_id
 export CREW_BIN=$tmp/crew-fake
 node_id=$(bash "$helper" spawn --name live-test --cli claude \
@@ -99,6 +108,20 @@ for expected in \
     exit 1
   fi
 done
+expected_notice="live-test/live-test: done. Report: $CREW_LIVE_REPORT"
+notice_ready=0
+for _ in {1..100}; do
+  parent_transcript=$(bash "$helper" read "$parent_id" screen)
+  if grep -Fq "PARENT_NOTICE=$expected_notice" <<<"$parent_transcript"; then
+    notice_ready=1
+    break
+  fi
+  sleep 0.1
+done
+[[ $notice_ready == 1 ]] || {
+  printf 'nodes-live: parent did not receive the exact notice.\n' >&2
+  exit 1
+}
 bash "$helper" close "$node_id"
 node_id=''
-printf 'nodes-live: Kitty spawn, send, read and close passed.\n'
+printf 'nodes-live: Kitty spawn, send, notify, read and close passed.\n'

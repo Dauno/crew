@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+nodes_script=${CREW_NODES_SCRIPT:-"$source_root/skills/nodes/scripts/nodes.sh"}
+if [[ ! -f $nodes_script ]]; then
+  printf 'crew-nodes: missing nodes helper: %s\n' "$nodes_script" >&2
+  exit 1
+fi
+
+exec bash "$nodes_script" "$@"

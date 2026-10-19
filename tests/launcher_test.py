@@ -1,6 +1,7 @@
 import json
 import os
 import pathlib
+import shutil
 import stat
 import subprocess
 import sys
@@ -66,6 +67,7 @@ keys = (
     "CODEX_APPLY_PATCH_PRESERVE_LINE_ENDINGS", "OPENAI_BASE_URL",
 )
 record = {"args": sys.argv[1:], "cwd": os.getcwd(),
+          "path": os.environ.get("PATH", ""),
           "env": {key: os.environ[key] for key in keys if key in os.environ}}
 args = sys.argv[1:]
 if "--append-system-prompt-file" in args:
@@ -95,6 +97,7 @@ keys = (
 )
 args = sys.argv[1:]
 record = {"args": args, "cwd": os.getcwd(),
+          "path": os.environ.get("PATH", ""),
           "env": {key: os.environ[key] for key in keys if key in os.environ}}
 if "--config" in args:
     value = args[args.index("--config") + 1]
@@ -309,9 +312,11 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
             "  - " + str(self.skills / "nodes/SKILL.md"),
             record["instructions"],
         )
-        self.assertIn(
-            "Nodes helper: " + str(helper),
-            record["instructions"],
+        self.assertIn("Nodes helper: crew-nodes", record["instructions"])
+        self.assertNotIn(str(helper), record["instructions"])
+        self.assertEqual(
+            shutil.which("crew-nodes", path=record["path"]),
+            str(REPO / "bin/crew-nodes"),
         )
         plugin_index = record["args"].index("--plugin-dir") + 1
         self.assertEqual(record["args"][plugin_index], str(self.plugin))
@@ -322,13 +327,7 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         settings = self._record()["settings"]
         self.assertEqual(
             settings,
-            {
-                "permissions": {
-                    "allow": [
-                        f"Bash(bash {self.skills}/nodes/scripts/nodes.sh *)"
-                    ]
-                }
-            },
+            {"permissions": {"allow": ["Bash(crew-nodes *)"]}},
         )
         self.assertNotIn(
             "--dangerously-skip-permissions",
@@ -349,13 +348,7 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         self.assertIn("--settings", record["args"])
         self.assertEqual(
             self._record()["settings"],
-            {
-                "permissions": {
-                    "allow": [
-                        f"Bash(bash {self.skills}/nodes/scripts/nodes.sh *)"
-                    ]
-                }
-            },
+            {"permissions": {"allow": ["Bash(crew-nodes *)"]}},
         )
         self.assertNotIn("--dangerously-skip-permissions", record["args"])
         self.assertEqual(record["env"]["CREW_NODE"], "worker-a")
