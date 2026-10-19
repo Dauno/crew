@@ -303,8 +303,17 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         )
 
     def test_generated_instructions_and_claude_plugin_arguments(self):
-        self._run("claude", "--print", "prompt")
+        result = self._run("claude", "--print", "prompt")
         record = self._record()
+        permission_notice = (
+            "Workers run without confirmation prompts by default. "
+            "Set CREW_UNATTENDED_WORKERS=0 to require prompts."
+        )
+        self.assertEqual(result.stderr, f"crew: {permission_notice}\n")
+        self.assertIn(
+            "- Worker permissions: " + permission_notice,
+            record["instructions"],
+        )
         self.assertIn("CORE_MARKER", record["instructions"])
         self.assertIn("## This session", record["instructions"])
         helper = self.skills / "nodes/scripts/nodes.sh"
@@ -322,6 +331,22 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         self.assertEqual(record["args"][plugin_index], str(self.plugin))
         self.assertEqual(list(self.tmp.glob("crew-instructions.*")), [])
 
+    def test_human_session_reports_attended_worker_override(self):
+        result = self._run(
+            "claude",
+            env=self._env(CREW_UNATTENDED_WORKERS="0"),
+        )
+        record = self._record()
+        permission_notice = (
+            "Workers require confirmation prompts. "
+            "Set CREW_UNATTENDED_WORKERS=1 to run without prompts."
+        )
+        self.assertEqual(result.stderr, f"crew: {permission_notice}\n")
+        self.assertIn(
+            "- Worker permissions: " + permission_notice,
+            record["instructions"],
+        )
+
     def test_human_claude_allows_only_nodes_helper(self):
         self._run("claude")
         settings = self._record()["settings"]
@@ -336,7 +361,7 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         self.assertFalse((self.home / ".claude").exists())
         self.assertFalse((self.home / ".codex").exists())
 
-    def test_claude_worker_permissions_default_and_unattended(self):
+    def test_claude_worker_permissions_default_and_overrides(self):
         env = self._env(
             CREW_ROLE="worker",
             CREW_NODE="worker-a",
@@ -347,10 +372,10 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         record = self._record()
         self.assertIn("--settings", record["args"])
         self.assertEqual(
-            self._record()["settings"],
+            record["settings"],
             {"permissions": {"allow": ["Bash(crew-nodes *)"]}},
         )
-        self.assertNotIn("--dangerously-skip-permissions", record["args"])
+        self.assertIn("--dangerously-skip-permissions", record["args"])
         self.assertEqual(record["env"]["CREW_NODE"], "worker-a")
         self.assertEqual(record["env"]["CREW_TASK"], "task-a")
         self.assertEqual(record["env"]["CREW_PARENT"], "9")
@@ -358,14 +383,26 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         self.assertIn("- Node: worker-a", record["instructions"])
         self.assertIn("- Task: task-a", record["instructions"])
         self.assertIn("- Parent Kitty window: 9", record["instructions"])
+
+        env = self._env(
+            CREW_ROLE="worker",
+            CREW_UNATTENDED_WORKERS="0",
+        )
+        self._run("claude", env=env)
+        self.assertNotIn(
+            "--dangerously-skip-permissions",
+            self._record()["args"],
+        )
+
         env = self._env(
             CREW_ROLE="worker",
             CREW_UNATTENDED_WORKERS="1",
         )
         self._run("claude", env=env)
-        record = self._record()
-        self.assertIn("--settings", record["args"])
-        self.assertIn("--dangerously-skip-permissions", record["args"])
+        self.assertIn(
+            "--dangerously-skip-permissions",
+            self._record()["args"],
+        )
 
     def test_codex_human_worker_and_unattended_permissions(self):
         self._run("codex", "exec", "--ephemeral", "extra", env=self._env())
@@ -384,9 +421,22 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         self.assertIn("--sandbox", worker_args)
         worker_sandbox = worker_args.index("--sandbox") + 1
         self.assertEqual(worker_args[worker_sandbox], "danger-full-access")
-        self.assertNotIn(
+        self.assertIn(
             "--dangerously-bypass-approvals-and-sandbox",
             worker_args,
+        )
+
+        self._run(
+            "codex",
+            env=self._env(
+                CREW_ROLE="worker",
+                CREW_UNATTENDED_WORKERS="0",
+            ),
+        )
+        attended_args = self._record()["args"]
+        self.assertNotIn(
+            "--dangerously-bypass-approvals-and-sandbox",
+            attended_args,
         )
 
         self._run(

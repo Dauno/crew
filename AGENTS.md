@@ -142,14 +142,15 @@ The human's Claude Code session keeps its prompts.
 A settings rule allows `crew-nodes` without a prompt.
 The human's Codex session runs with `--sandbox danger-full-access`.
 
-Workers keep each CLI's normal prompts by default.
-Claude Code workers also get the settings rule for the nodes helper.
-Codex workers run with `--sandbox danger-full-access`, like the human's.
-Codex's sandbox blocks the Kitty socket, so a sandboxed worker cannot report.
-The human opts in to unattended workers with `CREW_UNATTENDED_WORKERS=1`.
-Then Claude Code workers get `--dangerously-skip-permissions`.
+The human decided that workers run without prompts by default.
+Claude Code workers get `--dangerously-skip-permissions`.
 Codex workers get `--dangerously-bypass-approvals-and-sandbox`.
-crew never sets this variable itself; only the human does.
+The human can require prompts with `CREW_UNATTENDED_WORKERS=0`.
+Then Claude Code workers keep prompts, with the settings rule for
+`crew-nodes`, and Codex workers run with `--sandbox danger-full-access`.
+Codex's sandbox blocks the Kitty socket, so a sandboxed worker cannot report.
+At startup, the human's session states whether workers run without prompts
+and how to change it.
 
 Never pass model, provider or credential settings.
 Each CLI keeps the human's configuration, including Vertex endpoints.
