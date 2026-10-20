@@ -70,11 +70,12 @@ interactive editor is ready and no dialog is open. A title or process alone
 does not prove readiness.
 
 Claude Code can ask whether to trust a new project. Codex can also ask for
-repository trust. Unattended permissions can trigger a one-time notice.
+repository trust. Pi can ask whether to trust project resources under `.pi`.
+Unattended permissions can trigger a one-time notice.
 
 Ask the human to answer trust or permissions dialogs in that worker's tab.
 Never answer a dialog yourself or send a brief to it. Return could accept it.
-Pi 0.75.4 has no permission prompts and needs no bypass flag.
+Pi 1.3.0 has no tool permission prompts and needs no bypass flag.
 
 Pi draws its editor between matching full-width horizontal borders above two
 footer rows. Draft text keeps a notice waiting, regardless of its color.
