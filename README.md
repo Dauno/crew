@@ -6,13 +6,13 @@ lessons across sessions and repositories.
 
 ## Requirements
 
-Use Nix with flakes enabled, SSH access to this private repository, Kitty for
-worker tabs and a configured Claude Code, Codex or Pi CLI.
+Use Nix with flakes enabled, Kitty for worker tabs and a configured Claude
+Code, Codex or Pi CLI.
 
 ## Install
 
 ```sh
-nix profile add git+ssh://git@github.com/Dauno/crew
+nix profile add github:Dauno/crew
 ```
 
 ## Update

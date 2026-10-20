@@ -8,7 +8,9 @@ Whichever CLI the human starts, the agent has the same abilities.
 Agents in separate Kitty tabs coordinate work across repositories.
 
 Keep crew small. Add machinery only when real use shows that it helps.
-crew is private. It runs on this Linux host and on a macOS work machine.
+crew is a public repository at `github.com/Dauno/crew`. It runs on this
+Linux host and on a macOS work machine. Everything committed is world
+readable, so commit nothing private.
 
 ## Repository structure
 
@@ -220,7 +222,10 @@ A statement by a model is not evidence.
 
 - Do not commit, push or create remotes unless the coordinator asks.
 - Stage your new files with `git add`; flakes ignore untracked files.
-- Never put secrets, work data or real memory in the repository.
+- Never put secrets, work data or real memory in the repository. It is
+  public, and Git history keeps every commit.
+- Use generic examples in tests, docs and commit messages. Do not name
+  employers, work repositories, internal hosts or private endpoints.
 - Do not edit other repositories.
 
 ## Writing
