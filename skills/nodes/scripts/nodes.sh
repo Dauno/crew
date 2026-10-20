@@ -6,9 +6,11 @@ usage() {
 Usage: nodes.sh COMMAND [ARGS]
   list                         List Kitty windows as JSON lines.
   read ID [screen|all]         Read a window's text.
-  send ID [--enter]            Send nonempty standard input to a window.
-  send ID --enter-only         Send only Return; do not read standard input.
-  notify STATUS REPORT         Send a worker notice to its parent.
+  send ID                      Publish nonempty standard input to a crew session.
+  type ID [--enter]            Type nonempty standard input into a window.
+  type ID --enter-only         Type only Return; do not read standard input.
+  ack MESSAGE_ID               Acknowledge a message in this session's inbox.
+  notify STATUS REPORT         Publish a worker notice to its parent.
   spawn --name N --cli CLI --cwd DIR [--task T] [-- ARGS...]
                                Open a worker tab and print its window ID.
   interrupt ID                 Send Escape to a worker window.
@@ -31,15 +33,11 @@ require_runtime_tools() {
 }
 
 send_wait_seconds=60
-notice_wait_seconds=3600
 poll_interval=0.25
 if [[ ${CREW_NODES_TESTING:-0} == 1 ]]; then
   send_wait_seconds=${CREW_NODES_TEST_SEND_WAIT_SECONDS:-60}
-  notice_wait_seconds=${CREW_NODES_TEST_NOTICE_WAIT_SECONDS:-3600}
   [[ $send_wait_seconds =~ ^[0-9]+$ ]] ||
     die 'test send wait must be a nonnegative integer.'
-  [[ $notice_wait_seconds =~ ^[0-9]+$ ]] ||
-    die 'test notice wait must be a nonnegative integer.'
 fi
 
 require_connection() {
@@ -107,6 +105,42 @@ require_worker_window() {
     fi
     die "no Kitty window has ID $id."
   fi
+}
+
+mailbox_script() {
+  local script_dir
+  script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+  printf '%s/mailbox.py\n' "$script_dir"
+}
+
+native_target_session() {
+  local id=$1 listing user_vars session_id native cli state
+  valid_id "$id"
+  listing=$(kitty_ls)
+  if ! jq -e --arg id "$id" \
+    '[.[]?.tabs[]?.windows[]? | select((.id | tostring) == $id)]
+      | length == 1' >/dev/null <<<"$listing"; then
+    die "no Kitty window has ID $id."
+  fi
+  user_vars=$(jq -ce --arg id "$id" \
+    '[.[]?.tabs[]?.windows[]? | select((.id | tostring) == $id)][0]
+      | .user_vars // {}' <<<"$listing") || die "could not read Kitty labels for $id."
+  session_id=$(jq -r '.crew_session // empty' <<<"$user_vars")
+  native=$(jq -r '.crew_native // empty' <<<"$user_vars")
+  cli=$(jq -r '.crew_cli // empty' <<<"$user_vars")
+  [[ $session_id =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+    die "Kitty window $id has no crew session identity; restart it with crew."
+  [[ $native == 1 ]] ||
+    die "Kitty window $id has no native crew receiver."
+  if [[ $cli == codex ]]; then
+    state=$(python3 "$(mailbox_script)" codex-state --session "$session_id") ||
+      die "could not verify Codex routing for Kitty window $id."
+    [[ -n $state ]] || die "Codex native receiver is not ready for Kitty window $id."
+    if jq -e '.stale == true' >/dev/null <<<"$state"; then
+      die "Codex conversation changed; restart the crew session before messaging."
+    fi
+  fi
+  printf '%s\n' "$session_id"
 }
 
 list_windows() {
@@ -383,18 +417,10 @@ print("clear")
   esac
 }
 
-last_input_state=unknown
-
 wait_for_clear() {
   local id=$1 timeout_seconds=$2 started=$SECONDS state
   while :; do
     state=$(input_state "$id")
-    if [[ -n ${CREW_NOTICE_PENDING:-} &&
-      $state != "${last_input_state:-unknown}" ]]; then
-      write_sender_status "$CREW_NOTICE_PENDING" running "$state" \
-        'Waiting for an empty parent input' || true
-    fi
-    last_input_state=$state
     [[ $state == clear ]] && return 0
     (( SECONDS - started < timeout_seconds )) || return 1
     sleep "$poll_interval"
@@ -409,22 +435,50 @@ send_and_enter() {
     (( remaining >= 0 )) || return 1
     wait_for_clear "$id" "$remaining" || return 1
     state=$(input_state "$id")
-    last_input_state=$state
     [[ $state == clear ]] && break
     (( SECONDS - started < timeout_seconds )) || return 1
   done
-  kitty_send_text "$id" "$text" || {
-    last_input_state=send-failed
-    return 1
-  }
+  kitty_send_text "$id" "$text" || return 1
   sleep 0.5
-  kitty_send_text "$id" $'\r' || {
-    last_input_state=send-failed
-    return 1
-  }
+  kitty_send_text "$id" $'\r'
 }
 
-send_text() {
+send_native() {
+  local id=${1:-} destination message_id script
+  if [[ $# -eq 2 && ( $2 == --enter || $2 == --enter-only ) ]]; then
+    die 'send no longer types into a terminal; use type ID [--enter] for explicit keyboard input.'
+  fi
+  [[ $# -eq 1 ]] || usage
+  valid_id "$id"
+  refuse_self send "$id"
+  destination=$(native_target_session "$id")
+  script=$(mailbox_script)
+  if ! message_id=$(python3 "$script" publish --to "$destination"); then
+    die "could not store message for Kitty window $id."
+  fi
+  printf 'stored as pending; recipient must acknowledge: %s\n' "$message_id"
+}
+
+ack_message() {
+  local message_id=${1:-} script
+  [[ $# -eq 1 ]] || usage
+  script=$(mailbox_script)
+  python3 "$script" ack "$message_id"
+}
+
+mailbox_internal() {
+  local script
+  script=$(mailbox_script)
+  python3 "$script" "$@"
+}
+
+claude_hook() {
+  local script_dir
+  script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+  python3 "$script_dir/claude_hook.py"
+}
+
+type_text() {
   local id=${1:-} enter=0 enter_only=0 text
   [[ $# -ge 1 && $# -le 2 ]] || usage
   case ${2:-} in
@@ -434,7 +488,7 @@ send_text() {
     *) usage ;;
   esac
   valid_id "$id"
-  refuse_self send "$id"
+  refuse_self type "$id"
   require_window "$id"
 
   if [[ $enter_only == 1 ]]; then
@@ -447,9 +501,9 @@ send_text() {
   text=${text//$'\r'/}
   if [[ -z $text ]]; then
     if [[ $enter == 1 ]]; then
-      die 'send --enter requires nonempty input; use --enter-only for Return.'
+      die 'type --enter requires nonempty input; use --enter-only for Return.'
     fi
-    die 'send requires nonempty standard input.'
+    die 'type requires nonempty standard input.'
   fi
 
   if [[ $enter == 1 ]]; then
@@ -475,120 +529,8 @@ record_metrics() {
   fi
 }
 
-save_notice() {
-  local message=$1 task=$2 runs_dir=$3 notices_dir
-  [[ $task != */* && $task != . && $task != .. ]] ||
-    die 'CREW_TASK must be a single path component.'
-  notices_dir=$runs_dir/$task/notices
-  mkdir -p -- "$notices_dir" || die "could not create $notices_dir."
-  local pending
-  pending=$(mktemp "$notices_dir/notice.XXXXXXXX") ||
-    die "could not create a pending notice in $notices_dir."
-  if ! printf '%s\n' "$message" >"$pending"; then
-    rm -f -- "$pending"
-    die "could not write the pending notice: $pending"
-  fi
-  printf '%s\n' "$pending"
-}
-
-write_sender_status() {
-  local pending=$1 state=$2 last_input=$3 reason=$4
-  local notices_dir status_file temporary
-  notices_dir=${pending%/*}
-  status_file=$pending.status
-  temporary=$(mktemp "$notices_dir/.sender-status.XXXXXXXX") || return 1
-  if ! printf 'state=%s\npid=%s\nlast_input=%s\nreason=%s\n' \
-    "$state" "$$" "$last_input" "$reason" >"$temporary"; then
-    rm -f -- "$temporary"
-    return 1
-  fi
-  if ! mv -f -- "$temporary" "$status_file"; then
-    rm -f -- "$temporary"
-    return 1
-  fi
-}
-
-sender_pending=''
-
-sender_interrupted() {
-  local signal=$1
-  if [[ -n $sender_pending && -f $sender_pending ]]; then
-    write_sender_status "$sender_pending" failed \
-      "${last_input_state:-unknown}" "Sender interrupted by $signal" || true
-  fi
-  exit 1
-}
-
-start_background_sender() {
-  local pending=$1 script=${BASH_SOURCE[0]} reply reason
-  local -a launch_args=(
-    launch --type=background --allow-remote-control --copy-env
-    --env "CREW_PARENT=$CREW_PARENT"
-    --env "CREW_NOTICE_PENDING=$pending"
-  )
-  if [[ ${CREW_NODES_TESTING:-} == 1 ]]; then
-    launch_args+=(
-      --env CREW_NODES_TESTING=1
-      --env "CREW_NODES_TEST_NOTICE_WAIT_SECONDS=$notice_wait_seconds"
-    )
-  fi
-  write_sender_status "$pending" starting "$last_input_state" \
-    'Kitty background launch requested' || return 1
-  if ! reply=$(kitty_remote "${launch_args[@]}" bash "$script" \
-    _deliver-pending "$pending" 2>&1); then
-    reply=${reply//$'\n'/ }
-    reason="Kitty background launch failed: ${reply:0:160}"
-    write_sender_status "$pending" failed "$last_input_state" \
-      "$reason" || true
-    printf 'nodes: notice pending at %s; %s.\n' \
-      "$pending" "$reason" >&2
-    return 1
-  fi
-}
-
-deliver_pending() {
-  local pending=${1:-} message='' started elapsed remaining
-  [[ $# -eq 1 ]] || usage
-  [[ -f $pending ]] || return 0
-  [[ -n ${CREW_PARENT:-} ]] || return 0
-  valid_id "$CREW_PARENT"
-  refuse_self notify "$CREW_PARENT"
-  IFS= read -r message <"$pending" || [[ -n $message ]] || return 0
-  sender_pending=$pending
-  trap 'sender_interrupted HUP' HUP
-  trap 'sender_interrupted INT' INT
-  trap 'sender_interrupted TERM' TERM
-  last_input_state=unknown
-  write_sender_status "$pending" running "$last_input_state" \
-    'Waiting for an empty parent input' || true
-  started=$SECONDS
-  while :; do
-    elapsed=$((SECONDS - started))
-    remaining=$((notice_wait_seconds - elapsed))
-    if (( remaining < 0 )); then
-      write_sender_status "$pending" failed "$last_input_state" \
-        "Wait limit ${notice_wait_seconds}s expired" || true
-      return 1
-    fi
-    if send_and_enter "$CREW_PARENT" "$message" "$remaining"; then
-      rm -f -- "$pending"
-      rm -f -- "$pending.status"
-      return 0
-    fi
-    elapsed=$((SECONDS - started))
-    if (( elapsed >= notice_wait_seconds )); then
-      write_sender_status "$pending" failed "$last_input_state" \
-        "Wait limit ${notice_wait_seconds}s expired" || true
-      return 1
-    fi
-    write_sender_status "$pending" running "$last_input_state" \
-      'Waiting for an empty parent input' || true
-    sleep "$poll_interval"
-  done
-}
-
 notify_parent() {
-  local status=${1:-} report=${2:-} parent message pending runs_dir metrics
+  local status=${1:-} report=${2:-} parent message destination script
   [[ $# -eq 2 ]] || usage
   [[ -n $status ]] || die 'notify STATUS must not be empty.'
   [[ -n ${CREW_TASK:-} ]] || die 'notify requires CREW_TASK.'
@@ -602,18 +544,17 @@ notify_parent() {
   refuse_self notify "$parent"
   metrics=$(record_metrics "$status" "$report")
   message="$CREW_TASK/$CREW_NODE: $status. Report: $report. Metrics: $metrics"
-  runs_dir=${CREW_RUNS:-${CREW_HOME:-$HOME/.local/share/crew}/runs}
-  pending=$(save_notice "$message" "$CREW_TASK" "$runs_dir")
-  if send_and_enter "$parent" "$message" "$send_wait_seconds"; then
-    rm -f -- "$pending"
-  elif ! start_background_sender "$pending"; then
-    die "notice remains pending at $pending; background sender failed."
+  destination=$(native_target_session "$parent")
+  script=$(mailbox_script)
+  if ! printf '%s' "$message" | python3 "$script" publish --to "$destination" \
+    >/dev/null; then
+    die "could not store notice for parent Kitty window $parent."
   fi
 }
 
 spawn_node() {
   local name='' cli='' cwd='' task=${CREW_TASK:-} reply directory_error
-  local started_at
+  local started_at session_id crew_home inbox
   local -a extra_args=()
   while [[ $# -gt 0 ]]; do
     case $1 in
@@ -638,11 +579,28 @@ spawn_node() {
   [[ -n ${CREW_BIN:-} ]] || die 'CREW_BIN is not set.'
   [[ -x $CREW_BIN ]] || die "CREW_BIN is not executable: $CREW_BIN"
   started_at=$(date +%s)
+  session_id=$(python3 -c 'import uuid; print(uuid.uuid4())') ||
+    die 'could not create worker session identity.'
+  crew_home=${CREW_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/crew}
+  inbox=$crew_home/mailboxes/$session_id
+  local script
+  script=$(mailbox_script)
+  if ! CREW_HOME=$crew_home CREW_SESSION_ID=$session_id \
+    CREW_INBOX=$inbox python3 "$script" reserve \
+      --cli "$cli" --node "$name" --task "$task" \
+      --parent "$KITTY_WINDOW_ID" --started-at "$started_at" \
+      >/dev/null; then
+    die 'could not reserve worker session identity.'
+  fi
 
   if ! reply=$(kitty_remote launch --type=tab --keep-focus --copy-env \
     --tab-title "$name · $cli" \
     --cwd "$cwd" \
     --env "CREW_CLI=$cli" \
+    --env "CREW_HOME=$crew_home" \
+    --env "CREW_SESSION_ID=$session_id" \
+    --env "CREW_INBOX=$inbox" \
+    --env CREW_SESSION_PREALLOCATED=1 \
     --env CREW_ROLE=worker \
     --env "CREW_NODE=$name" \
     --env "CREW_TASK=$task" \
@@ -650,6 +608,8 @@ spawn_node() {
     --env "CREW_STARTED_AT=$started_at" \
     --var "crew_node=$name" \
     --var "crew_cli=$cli" \
+    --var "crew_session=$session_id" \
+    --var crew_native=0 \
     --var crew_role=worker \
     --var "crew_task=$task" \
     --var "crew_parent=$KITTY_WINDOW_ID" \
@@ -684,19 +644,25 @@ close_window() {
 require_runtime_tools
 command_name=$1
 shift
-require_connection
-
 case $command_name in
-  list)
-    [[ $# -eq 0 ]] || usage
-    list_windows
+  ack) ack_message "$@" ;;
+  _mailbox) mailbox_internal "$@" ;;
+  claude-hook) [[ $# -eq 0 ]] || usage; claude_hook ;;
+  *)
+    require_connection
+    case $command_name in
+      list)
+        [[ $# -eq 0 ]] || usage
+        list_windows
+        ;;
+      read) read_window "$@" ;;
+      send) send_native "$@" ;;
+      type) type_text "$@" ;;
+      notify) notify_parent "$@" ;;
+      spawn) spawn_node "$@" ;;
+      interrupt) interrupt_window "$@" ;;
+      close) close_window "$@" ;;
+      *) usage ;;
+    esac
     ;;
-  read) read_window "$@" ;;
-  send) send_text "$@" ;;
-  notify) notify_parent "$@" ;;
-  spawn) spawn_node "$@" ;;
-  interrupt) interrupt_window "$@" ;;
-  close) close_window "$@" ;;
-  _deliver-pending) deliver_pending "$@" ;;
-  *) usage ;;
 esac

@@ -24,6 +24,7 @@ listen_on="unix:$tmp/kitty.sock"
 mkdir -p "$tmp/bin" "$tmp/home" "$tmp/agent" "$tmp/project"
 unset CREW_CLI CREW_HOME CREW_NODES_SCRIPT CREW_NODE CREW_PARENT
 unset CREW_REPO_ID CREW_ROLE CREW_RUNS CREW_STARTED_AT CREW_TASK
+unset CREW_SESSION_ID CREW_INBOX
 unset KITTY_WINDOW_ID XDG_DATA_HOME
 ln -s "$helper" "$tmp/bin/crew-nodes"
 export PATH="$tmp/bin:$PATH"
@@ -38,14 +39,10 @@ export CREW_PLUGIN="$root/claude"
 export KITTY_LISTEN_ON=$listen_on
 export CREW_NODES_TESTING=1
 export CREW_NODES_TEST_SEND_WAIT_SECONDS=1
-export CREW_NODES_TEST_NOTICE_WAIT_SECONDS=15
-export CREW_LIVE_REPORT="$tmp/report.md"
-printf 'synthetic live report\n' >"$CREW_LIVE_REPORT"
 
 kitty_pid=''
 parent_id=''
 worker_id=''
-notice_dir=$HOME/.local/share/crew/runs/pi-live/notices
 
 cleanup() {
   local status=$?
@@ -91,18 +88,12 @@ wait_screen() {
   return 1
 }
 
-send_text() {
-  local id=$1 text=$2
-  printf '%s' "$text" | kitten @ --to "$listen_on" \
-    send-text --match "id:$id" --stdin
-}
-
 send_to_window() {
   local id=$1 text=$2
   env -u KITTY_WINDOW_ID KITTY_LISTEN_ON="$listen_on" \
     CREW_CLI=pi CREW_HOME="$HOME/.local/share/crew" \
     CREW_RUNS="$HOME/.local/share/crew/runs" \
-    bash "$helper" send "$id" --enter <<<"$text"
+    bash "$helper" type "$id" --enter <<<"$text"
 }
 
 kitty --config NONE -o allow_remote_control=socket-only \
@@ -145,20 +136,10 @@ wait_screen "$parent_id" 'PI_PARENT_MULTILINE_TWO' || {
   exit 1
 }
 
-human_input='synthetic human draft'
-send_text "$parent_id" "$human_input"
-sleep 0.2
-screen "$parent_id" >"$tmp/parent-draft.ansi"
-grep -Fq "$human_input" "$tmp/parent-draft.ansi" || {
-  printf 'pi-live: parent did not retain the typed draft.\n' >&2
-  exit 1
-}
-
 worker_id=$(env KITTY_WINDOW_ID="$parent_id" \
   KITTY_LISTEN_ON="$listen_on" CREW_BIN="$CREW_BIN" \
   CREW_NODES_TESTING=1 \
   CREW_NODES_TEST_SEND_WAIT_SECONDS=1 \
-  CREW_NODES_TEST_NOTICE_WAIT_SECONDS=15 \
   bash "$helper" spawn --name pi-worker --cli pi \
     --cwd "$tmp/project" --task pi-live -- --offline \
     --no-extensions --no-prompt-templates --no-context-files)
@@ -170,54 +151,15 @@ wait_screen "$worker_id" '0.0%/0' || {
   printf 'pi-live: Pi worker did not become ready.\n' >&2
   exit 1
 }
-session_dir_glob="$HOME/.local/share/crew/runs/pi-live/pi/${worker_id}-"*
+session_parent="$HOME/.local/share/crew/runs/pi-live/pi"
 for _ in {1..50}; do
-  compgen -G "$session_dir_glob" >/dev/null && break
+  find "$session_parent" -mindepth 1 -maxdepth 1 -type d \
+    -name "${worker_id}-*" -print -quit | grep -q . && break
   sleep 0.1
 done
-compgen -G "$session_dir_glob" >/dev/null || {
+find "$session_parent" -mindepth 1 -maxdepth 1 -type d \
+  -name "${worker_id}-*" -print -quit | grep -q . || {
   printf 'pi-live: launcher did not create the isolated Pi session directory.\n' >&2
-  exit 1
-}
-
-printf -v notify_command '!!crew-nodes notify done %q' "$CREW_LIVE_REPORT"
-send_to_window "$worker_id" "$notify_command"
-notice='pi-live/pi-worker: done.'
-notice_ready=0
-for _ in {1..100}; do
-  screen "$parent_id" >"$tmp/parent-waiting.ansi"
-  if grep -Fq "$human_input" "$tmp/parent-waiting.ansi" &&
-    compgen -G "$notice_dir/notice.*" >/dev/null; then
-    notice_ready=1
-    break
-  fi
-  sleep 0.1
-done
-[[ $notice_ready == 1 ]] || {
-  printf 'pi-live: notice did not wait while the parent held its draft.\n' >&2
-  exit 1
-}
-if grep -Fq "$notice" "$tmp/parent-waiting.ansi"; then
-  printf 'pi-live: notice arrived before the parent draft cleared.\n' >&2
-  exit 1
-fi
-
-kitten @ --to "$listen_on" send-key --match "id:$parent_id" ctrl+a ctrl+k
-notice_delivered=0
-for _ in {1..150}; do
-  screen "$parent_id" >"$tmp/parent-delivered.ansi"
-  if grep -Fq "$notice" "$tmp/parent-delivered.ansi"; then
-    notice_delivered=1
-    break
-  fi
-  sleep 0.1
-done
-[[ $notice_delivered == 1 ]] || {
-  printf 'pi-live: Pi parent did not receive the waiting notice.\n' >&2
-  exit 1
-}
-grep -Fq "$human_input" "$tmp/parent-delivered.ansi" && {
-  printf 'pi-live: parent draft remained after the editor cleared.\n' >&2
   exit 1
 }
 
@@ -274,4 +216,4 @@ done
 }
 
 printf '%s\n' \
-  'pi-live: Pi 1.3.0 spawn, delayed notice, multiline, Escape and /quit passed.'
+  'pi-live: Pi 1.3.0 spawn, multiline, Escape and /quit passed.'

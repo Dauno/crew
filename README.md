@@ -37,7 +37,7 @@ crew pi
 Outside a remote-controllable Kitty session, `crew` opens its own Kitty
 window. Ask the agent to open workers and describe their tasks. The agent uses
 the `nodes` skill and helper to open Claude Code, Codex or Pi worker nodes as
-Kitty tabs. Workers send completion notices to their parent.
+Kitty tabs. Workers send completion notices to their parent through mailboxes.
 
 Helper reference:
 
@@ -50,6 +50,27 @@ crew-nodes spawn \
 `$CREW_RUNS/<task>/` and the worker's `CREW_TASK` variable. Arguments after
 `--` pass unchanged to the CLI. Pass them only when the human requests a model
 or option; otherwise, workers use their CLI's default model.
+
+## Native messages
+
+Each `crew` session has a UUID and a private mailbox under
+`$CREW_HOME/mailboxes/`. `crew-nodes send ID` uses the Kitty window ID to find
+that session and atomically stores a message. Success means stored, not read.
+Messages may contain up to 8 KiB of UTF-8 text. Send a report path for longer
+content. The receiver delivers through its CLI integration, never by typing
+into the editor.
+
+After reading a message, the recipient runs `crew-nodes ack MESSAGE_ID`.
+Only this explicit acknowledgement moves the message to `received`.
+Acknowledgement does not report task completion or promise exactly-once work.
+`notify STATUS REPORT` uses the same mailbox and keeps its current notice text
+and one metrics record per call.
+
+Use `crew-nodes type ID [--enter]` only for deliberate terminal input.
+Native task messages never fall back to `type`. Pending messages stay with
+closed sessions; crew does not migrate them to a new session automatically.
+Codex messaging stops if its TUI switches to another root conversation.
+Restart the crew session before sending to that conversation.
 
 ## Memory and permissions
 
@@ -134,8 +155,11 @@ nix run ~/Projects/crew -- codex
 nix run ~/Projects/crew -- pi
 nix flake check
 nix develop -c bash tests/live/nodes_live.sh
+nix develop -c bash tests/live/messaging_live.sh
 ```
 
+The messaging smoke starts Claude with Haiku and the configured provider.
+It can incur model usage. It never starts a paid Codex or Pi turn.
 The default development shell supplies the tools for live tests. They require
 a desktop Kitty session. Scripts in `tests/live/` start
 their own hidden Kitty and do not use the human's windows.

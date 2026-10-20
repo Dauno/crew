@@ -47,6 +47,8 @@ The launcher exports these variables to the CLI and its tools:
 | `CREW_TASK` | the task label, in workers |
 | `CREW_PARENT` | the Kitty window ID of the spawning node, in workers |
 | `CREW_REPO_ID` | the repository ID; empty outside Git |
+| `CREW_SESSION_ID` | a UUID unique to this crew CLI session |
+| `CREW_INBOX` | `$CREW_HOME/mailboxes/$CREW_SESSION_ID` |
 
 `CREW_REPO_ID` comes from the `origin` URL as `host/owner/repo`.
 It is lowercase, without `.git`, a user or credentials.
@@ -56,8 +58,9 @@ Memory directory names replace each `/` with `_`.
 ### Instructions
 
 The launcher appends a `## This session` block to `core/instructions.md`.
-The block lists the CLI, role, node, task, parent window and repository ID.
-It also lists the memory, runs and skills paths and the nodes helper.
+The block lists the CLI, role, node, task, parent window, repository ID,
+session ID and inbox path. It also lists memory, runs and skills paths and
+the nodes helper.
 Instructions refer to these values instead of hard-coded paths.
 
 ### Memory
@@ -97,9 +100,11 @@ never through a path or a shell variable.
 crew-nodes <command>
   list                     one JSON object per window in this Kitty
   read ID [screen|all]     print a window's text
-  send ID [--enter]        send nonempty standard input; --enter adds Return
-  send ID --enter-only     send only Return; read no input
-  notify STATUS REPORT     worker notice to its parent, in the notice format
+  send ID                  publish nonempty standard input to a crew session
+  type ID [--enter]        type nonempty standard input into a window
+  type ID --enter-only     type only Return; read no input
+  ack MESSAGE_ID           acknowledge a message in this session's inbox
+  notify STATUS REPORT     publish a worker notice to its parent
   spawn --name N --cli claude|codex|pi --cwd DIR [--task T] [-- ARGS...]
                            open a worker tab; print its window ID
   interrupt ID             send Escape to a worker window
@@ -109,23 +114,45 @@ crew-nodes <command>
 IDs are Kitty window IDs within one Kitty instance.
 The helper refuses to send to, interrupt or close its own window.
 `interrupt` and `close` act only on windows labeled `crew_role=worker`.
-`send --enter` sends Return separately, after a 0.5 second pause.
-`send` fails on empty input; only `--enter-only` sends Return alone.
+`send ID` resolves the live window's `crew_session` user variable and stores
+its message in that session's mailbox. The success result confirms storage,
+not receipt. Text is limited to 8 KiB of UTF-8; send a report path for longer
+content. It never types into the target's editor. `send --enter` and
+`send --enter-only` fail; use `type` for explicit keyboard input.
+`type` preserves the previous terminal behavior, including its editor checks.
+`ack MESSAGE_ID` accepts only the current session's delivered message. It is
+idempotent after receipt. Only `ack` moves a message from `pending` to
+`received`; adapters never infer receipt from native API calls or hook output.
+Agents acknowledge each crew message after reading it. An acknowledgement does
+not report task completion and does not promise exactly-once execution.
+
 `notify` needs `CREW_TASK`, `CREW_NODE` and `CREW_PARENT`. It records the
-worker's metrics, then sends this line to the parent with Return:
+worker's metrics once, then publishes this existing notice text natively:
 `<task>/<node>: <STATUS>. Report: <REPORT>. Metrics: <summary>`.
+A successful notice only confirms storage. It does not wait for or simulate
+an empty parent editor.
 `spawn` also sets `CREW_STARTED_AT` to the Unix time of the launch.
 
-### Delivery without collisions
+### Native message delivery
 
-A human may be typing in the destination's input. Before `send --enter` or
-`notify` types, the helper waits until that input holds no human text.
-Placeholder and suggestion text do not count; the helper tells them apart by
-their style in `kitten @ get-text --ansi`. It checks again just before
-typing. `send` waits up to 60 seconds, then fails with a clear error.
-`notify` waits up to 60 seconds, then hands the notice to a background
-sender that keeps waiting for up to one hour. A notice that is not yet
-delivered stays in `$CREW_RUNS/<task>/notices/`.
+Each CLI session owns `$CREW_HOME/mailboxes/<session-id>/`. Messages contain
+only `id`, `from` and `text`; the recipient comes from the mailbox route.
+Publication writes a temporary file and renames it atomically into `pending/`.
+A private dispatch marker prevents repeated native injection before `ack`.
+
+Each receiver processes one message at a time. An acknowledgement validates
+`CREW_SESSION_ID`, moves that message into `received/` and permits the next
+message. If a receiver crashes after reserving delivery, crew does not inject
+the same message again automatically. The pending file remains for explicit
+reconciliation. New sessions never inherit pending files automatically.
+There is no terminal fallback when a native receiver is missing.
+
+Pi uses a session extension. Claude uses `SessionStart` `watchPaths` and a
+one-shot `FileChanged` hook with `asyncRewake`. The hook emits context but
+never acknowledges it. Codex runs its visible TUI on a per-session local
+app-server. A supervised receiver queues to that server's loaded root thread.
+A new root thread invalidates the route; messaging fails closed until crew
+starts a fresh session.
 
 ### Metrics
 
@@ -158,9 +185,10 @@ stay on the machine with the rest of `$CREW_HOME`. A metrics failure never
 blocks a notice: the summary then says `metrics unavailable`.
 `spawn` runs `kitten @ launch --type=tab --keep-focus --copy-env`.
 It titles the tab `<name> · <cli>`.
-It sets `CREW_ROLE=worker`, `CREW_NODE`, `CREW_TASK` and `CREW_PARENT`.
-It labels the tab with `crew_node`, `crew_cli`, `crew_role`, `crew_task`
-and `crew_parent` user variables, then runs `"$CREW_BIN" <cli>`.
+It sets `CREW_ROLE=worker`, `CREW_NODE`, `CREW_TASK`, `CREW_PARENT`,
+`CREW_SESSION_ID` and `CREW_INBOX`. It labels the tab with `crew_node`,
+`crew_cli`, `crew_role`, `crew_task`, `crew_parent`, `crew_session` and
+`crew_native` user variables, then runs `"$CREW_BIN" <cli>`.
 Arguments after `--` go to that CLI unchanged, for example a model flag.
 Agents pass them only when the human asks; by default workers get none.
 
@@ -176,8 +204,9 @@ crew uses `kitten @` through `$KITTY_LISTEN_ON` only.
 Outside a remote-controllable Kitty, the launcher opens a new Kitty.
 It passes `-o allow_remote_control=socket-only` and a unique `--listen-on`
 socket under `${TMPDIR:-/tmp}`.
-crew never edits `kitty.conf`, `~/.claude` or `~/.codex`.
-It writes only under `$CREW_HOME` and its own temporary files.
+crew never edits `kitty.conf` or CLI settings and authentication under
+`~/.claude` or `~/.codex`. The CLIs manage their own native logs. Crew-owned
+state stays under `$CREW_HOME` and its own temporary files.
 It creates no links in `~/.agents` or other shared agent directories.
 Pi and plain Codex read `~/.agents/skills`, so a link there leaks crew.
 Codex finds the skills through the paths in `## This session`.
@@ -207,11 +236,14 @@ They unset `HYPRLAND_INSTANCE_SIGNATURE` and `XDG_RUNTIME_DIR`.
 They must not depend on Linux-only paths.
 Evaluate the macOS package with
 `nix eval .#packages.aarch64-darwin.default.drvPath`.
-Run the nodes live test with
+Run the fake nodes live test with
 `nix develop -c bash tests/live/nodes_live.sh`.
 The default shell provides Kitty, jq, Python, ShellCheck, Bash and coreutils.
 Run `tests/live/` scripts only in a desktop Kitty session.
 Live tests start their own hidden Kitty, never the human's windows.
+`tests/live/messaging_live.sh` runs a real Claude smoke with Haiku and the
+current provider; it may incur model usage. Do not start paid Pi or Codex
+turns without coordinator approval.
 On Linux, Kitty needs `XDG_RUNTIME_DIR` to reach Wayland.
 Keep it for live tests; crew code must still never read it.
 

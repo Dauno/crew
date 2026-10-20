@@ -24,7 +24,24 @@ class NodesTest(unittest.TestCase):
         self.script_dir.mkdir()
         self.helper = self.script_dir / "nodes.sh"
         shutil.copy2(HELPER, self.helper)
+        shutil.copy2(ROOT / "skills/nodes/scripts/mailbox.py",
+                     self.script_dir / "mailbox.py")
+        shutil.copy2(ROOT / "skills/nodes/scripts/claude_hook.py",
+                     self.script_dir / "claude_hook.py")
         self.home = self.root / "home"
+        self.crew_home = self.root / "crew-home"
+        self.sender_session = "11111111-1111-4111-8111-111111111111"
+        self.parent_session = "22222222-2222-4222-8222-222222222222"
+        self.worker_session = "33333333-3333-4333-8333-333333333333"
+        worker_mailbox = self.crew_home / "mailboxes" / self.worker_session
+        worker_mailbox.mkdir(parents=True)
+        (worker_mailbox / "codex.json").write_text(json.dumps({
+            "session_id": self.worker_session,
+            "socket_path": "/tmp/fake-codex.sock",
+            "thread_id": "fake-thread",
+            "stale": False,
+            "reason": "",
+        }), encoding="utf-8")
         self.work = self.root / "work"
         self.bin_dir.mkdir()
         self.home.mkdir()
@@ -126,6 +143,9 @@ class NodesTest(unittest.TestCase):
                                 ],
                                 "user_vars": {
                                     "crew_node": "parent",
+                                    "crew_cli": "pi",
+                                    "crew_session": "22222222-2222-4222-8222-222222222222",
+                                    "crew_native": "1",
                                     "other": "ignored",
                                 },
                             },
@@ -140,6 +160,9 @@ class NodesTest(unittest.TestCase):
                                 "user_vars": {
                                     "crew_cli": "codex",
                                     "crew_role": "worker",
+                                    "crew_node": "worker",
+                                    "crew_session": "33333333-3333-4333-8333-333333333333",
+                                    "crew_native": "1",
                                     "unrelated": "ignored",
                                 },
                             },
@@ -176,6 +199,10 @@ class NodesTest(unittest.TestCase):
                 "FAKE_KITTEN_LS": json.dumps(self.ls_data),
                 "FAKE_KITTEN_TEXT": "\u001b[m❯ \u001b[22;2mTry a sample task",
                 "CREW_RUNS": str(self.root / "runs"),
+                "CREW_HOME": str(self.crew_home),
+                "CREW_SESSION_ID": self.sender_session,
+                "CREW_INBOX": str(self.crew_home / "mailboxes" / self.sender_session),
+                "CREW_CLI": "pi",
                 "FAKE_METRICS_LOG": str(self.root / "metrics.jsonl"),
             }
         )
@@ -205,6 +232,9 @@ class NodesTest(unittest.TestCase):
         env.update(
             {
                 "KITTY_WINDOW_ID": "8",
+                "CREW_SESSION_ID": self.worker_session,
+                "CREW_INBOX": str(self.crew_home / "mailboxes" / self.worker_session),
+                "CREW_CLI": "claude",
                 "CREW_TASK": "crew-v1",
                 "CREW_NODE": "worker",
                 "CREW_PARENT": "7",
@@ -212,14 +242,11 @@ class NodesTest(unittest.TestCase):
         )
         return env
 
-    def enable_test_waits(self, env, send=1, notice=3):
-        env.update(
-            {
-                "CREW_NODES_TESTING": "1",
-                "CREW_NODES_TEST_SEND_WAIT_SECONDS": str(send),
-                "CREW_NODES_TEST_NOTICE_WAIT_SECONDS": str(notice),
-            }
-        )
+    def enable_test_waits(self, env, send=1):
+        env.update({
+            "CREW_NODES_TESTING": "1",
+            "CREW_NODES_TEST_SEND_WAIT_SECONDS": str(send),
+        })
         return env
 
     def write_input(self, text):
@@ -274,11 +301,22 @@ class NodesTest(unittest.TestCase):
         self.assertEqual(len(rows), 3)
         self.assertEqual(rows[0]["id"], 7)
         self.assertEqual(rows[0]["command"], "claude")
-        self.assertEqual(rows[0]["vars"], {"crew_node": "parent"})
+        self.assertEqual(rows[0]["vars"], {
+            "crew_cli": "pi",
+            "crew_native": "1",
+            "crew_node": "parent",
+            "crew_session": self.parent_session,
+        })
         self.assertTrue(rows[0]["self"])
         self.assertEqual(rows[1]["command"], "codex --help")
         self.assertEqual(
-            rows[1]["vars"], {"crew_cli": "codex", "crew_role": "worker"}
+            rows[1]["vars"], {
+                "crew_cli": "codex",
+                "crew_native": "1",
+                "crew_node": "worker",
+                "crew_role": "worker",
+                "crew_session": self.worker_session,
+            }
         )
         self.assertFalse(rows[1]["self"])
         self.assertEqual(rows[2]["id"], 9)
@@ -316,9 +354,9 @@ class NodesTest(unittest.TestCase):
             ["get-text", "--match", "id:8", "--extent", "screen"],
         )
 
-    def test_send_strips_carriage_returns_and_submits_separately(self):
+    def test_type_strips_carriage_returns_and_submits_separately(self):
         result = self.run_helper(
-            "send", "8", "--enter", input_text="first\r\nsecond\r"
+            "type", "8", "--enter", input_text="first\r\nsecond\r"
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = [call for call in self.calls() if "send-text" in call["args"]]
@@ -333,15 +371,15 @@ class NodesTest(unittest.TestCase):
             )
         )
 
-    def test_empty_send_enter_fails_with_guidance(self):
-        result = self.run_helper("send", "8", "--enter", input_text="")
+    def test_empty_type_enter_fails_with_guidance(self):
+        result = self.run_helper("type", "8", "--enter", input_text="")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("use --enter-only", result.stderr)
         self.assertFalse(
             any("send-text" in call["args"] for call in self.calls())
         )
 
-    def test_send_enter_accepts_placeholder_and_suggestion_styles(self):
+    def test_type_enter_accepts_placeholder_and_suggestion_styles(self):
         fixtures = {
             "claude placeholder": (
                 "\u001b[m❯ \u001b[22;2mTry \\\"write a test\\\""
@@ -360,7 +398,7 @@ class NodesTest(unittest.TestCase):
                 env = self.env.copy()
                 env["FAKE_KITTEN_TEXT"] = fixture
                 result = self.run_helper(
-                    "send", "8", "--enter", input_text="test message", env=env
+                    "type", "8", "--enter", input_text="test message", env=env
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
 
@@ -403,7 +441,7 @@ class NodesTest(unittest.TestCase):
         env = self.enable_test_waits(self.env.copy(), send=1)
         env["FAKE_KITTEN_TEXT"] = fixture["ansi"]
         result = self.run_helper(
-            "send", "8", "--enter", input_text="synthetic notice", env=env
+            "type", "8", "--enter", input_text="synthetic notice", env=env
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
@@ -534,7 +572,7 @@ class NodesTest(unittest.TestCase):
                 env = self.enable_test_waits(self.env.copy(), send=1)
                 env["FAKE_KITTEN_TEXT"] = fixture
                 result = self.run_helper(
-                    "send", "8", "--enter", input_text="synthetic notice",
+                    "type", "8", "--enter", input_text="synthetic notice",
                     env=env,
                 )
                 sent = [call["stdin"] for call in self.calls()
@@ -560,7 +598,7 @@ class NodesTest(unittest.TestCase):
                     context="0.0%/1.1M (auto) model",
                 )
                 result = self.run_helper(
-                    "send", "8", "--enter", input_text="synthetic notice",
+                    "type", "8", "--enter", input_text="synthetic notice",
                     env=env,
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
@@ -620,7 +658,7 @@ class NodesTest(unittest.TestCase):
                     env = self.enable_test_waits(self.env.copy(), send=0)
                     env["FAKE_KITTEN_TEXT"] = history + fixture
                     result = self.run_helper(
-                        "send", "8", "--enter",
+                        "type", "8", "--enter",
                         input_text="synthetic notice", env=env,
                     )
                     self.assertNotEqual(result.returncode, 0)
@@ -639,7 +677,7 @@ class NodesTest(unittest.TestCase):
         env["FAKE_KITTEN_SEQUENCE_FILE"] = str(sequence)
         env["FAKE_KITTEN_SEQUENCE_COUNTER"] = str(self.root / "input-count")
         result = self.run_helper(
-            "send", "8", "--enter", input_text="synthetic notice", env=env,
+            "type", "8", "--enter", input_text="synthetic notice", env=env,
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(
@@ -663,7 +701,7 @@ class NodesTest(unittest.TestCase):
                     context="unrecognized stats row",
                 )
                 result = self.run_helper(
-                    "send", "8", "--enter", input_text="synthetic notice",
+                    "type", "8", "--enter", input_text="synthetic notice",
                     env=env,
                 )
                 self.assertNotEqual(result.returncode, 0)
@@ -716,7 +754,7 @@ class NodesTest(unittest.TestCase):
                     histories[history_name] + "\n" + frame
                 )
                 result = self.run_helper(
-                    "send", "8", "--enter", input_text="synthetic notice",
+                    "type", "8", "--enter", input_text="synthetic notice",
                     env=env,
                 )
                 self.assertNotEqual(result.returncode, 0)
@@ -727,7 +765,7 @@ class NodesTest(unittest.TestCase):
                     [],
                 )
 
-    def test_pi_send_rechecks_the_editor_before_typing(self):
+    def test_pi_type_rechecks_the_editor_before_typing(self):
         clear = self.pi_frame()
         busy = self.pi_frame(("synthetic human draft",))
         sequence_path = self.root / "input-sequence.json"
@@ -738,7 +776,7 @@ class NodesTest(unittest.TestCase):
         env["FAKE_KITTEN_SEQUENCE_FILE"] = str(sequence_path)
         env["FAKE_KITTEN_SEQUENCE_COUNTER"] = str(self.root / "input-count")
         result = self.run_helper(
-            "send", "8", "--enter", input_text="synthetic notice", env=env
+            "type", "8", "--enter", input_text="synthetic notice", env=env
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
@@ -750,12 +788,12 @@ class NodesTest(unittest.TestCase):
             sum("get-text" in call["args"] for call in calls[:send_index]), 4
         )
 
-    def test_send_enter_waits_until_occupied_input_is_cleared(self):
+    def test_type_enter_waits_until_occupied_input_is_cleared(self):
         input_path = self.write_input("\u001b[m❯ review the build result")
         env = self.enable_test_waits(self.env.copy(), send=2)
         env["FAKE_KITTEN_TEXT_FILE"] = str(input_path)
         process = subprocess.Popen(
-            ["bash", str(self.helper), "send", "8", "--enter"],
+            ["bash", str(self.helper), "type", "8", "--enter"],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -788,7 +826,7 @@ class NodesTest(unittest.TestCase):
             ["worker message", "\r"],
         )
 
-    def test_send_enter_rechecks_input_before_typing(self):
+    def test_type_enter_rechecks_input_before_typing(self):
         clear = "\u001b[m❯ \u001b[22;2mTry a sample task"
         busy = "\u001b[m❯ human text"
         sequence_path = self.root / "input-sequence.json"
@@ -799,7 +837,7 @@ class NodesTest(unittest.TestCase):
         env["FAKE_KITTEN_SEQUENCE_FILE"] = str(sequence_path)
         env["FAKE_KITTEN_SEQUENCE_COUNTER"] = str(self.root / "input-count")
         result = self.run_helper(
-            "send", "8", "--enter", input_text="worker message", env=env
+            "type", "8", "--enter", input_text="worker message", env=env
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
@@ -811,7 +849,7 @@ class NodesTest(unittest.TestCase):
             sum("get-text" in call["args"] for call in calls[:send_index]), 4
         )
 
-    def test_send_enter_times_out_for_busy_or_unrecognized_input(self):
+    def test_type_enter_times_out_for_busy_or_unrecognized_input(self):
         for fixture in (
             "\u001b[m❯ human text",
             "\u001b[m❯ Try a sample task",
@@ -822,7 +860,7 @@ class NodesTest(unittest.TestCase):
                 env["FAKE_KITTEN_TEXT"] = fixture
                 started = time.monotonic()
                 result = self.run_helper(
-                    "send", "8", "--enter", input_text="worker message",
+                    "type", "8", "--enter", input_text="worker message",
                     env=env,
                 )
                 elapsed = time.monotonic() - started
@@ -836,16 +874,16 @@ class NodesTest(unittest.TestCase):
                     any("send-text" in call["args"] for call in self.calls())
                 )
 
-    def test_send_enter_only_sends_return_without_reading_input(self):
+    def test_type_enter_only_sends_return_without_reading_input(self):
         result = self.run_helper(
-            "send", "8", "--enter-only", input_text="must not be sent"
+            "type", "8", "--enter-only", input_text="must not be sent"
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = [call for call in self.calls() if "send-text" in call["args"]]
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["stdin"], "\r")
 
-    def test_notify_records_metrics_and_sends_summary(self):
+    def test_notify_records_metrics_and_publishes_notice_for_explicit_ack(self):
         report = self.root / "report.md"
         report.write_text("completed\n", encoding="utf-8")
         self.install_metrics(
@@ -853,33 +891,39 @@ class NodesTest(unittest.TestCase):
             "printf '%s\\n' \"$*\" >>\"$FAKE_METRICS_LOG\"\n"
             "printf '%s\\n' 'input=12 output=3'\n"
         )
-        result = self.run_helper(
-            "notify", "done", str(report), env=self.notify_environment()
-        )
+        env = self.notify_environment()
+        env["FAKE_KITTEN_TEXT"] = "\\u001b[m❯ human is still writing"
+        result = self.run_helper("notify", "done", str(report), env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
-        calls = [call for call in self.calls() if "send-text" in call["args"]]
-        self.assertEqual(len(calls), 2)
+        parent_inbox = self.crew_home / "mailboxes" / self.parent_session
+        pending = list((parent_inbox / "pending").glob("*.json"))
+        self.assertEqual(len(pending), 1)
+        message = json.loads(pending[0].read_text(encoding="utf-8"))
+        self.assertEqual(set(message), {"id", "from", "text"})
+        self.assertEqual(message["from"], self.worker_session)
         self.assertEqual(
-            [call["stdin"] for call in calls],
-            [
-                f"crew-v1/worker: done. Report: {report}. "
-                "Metrics: input=12 output=3",
-                "\r",
-            ],
+            message["text"],
+            f"crew-v1/worker: done. Report: {report}. Metrics: input=12 output=3",
         )
         self.assertEqual(
             (self.root / "metrics.jsonl").read_text(encoding="utf-8"),
             f"record --status done --report {report}\n",
         )
-        self.assertFalse(
-            list((self.root / "runs" / "crew-v1" / "notices").glob("*"))
-        )
-        self.assertTrue(
-            all(
-                call["args"][-3:] == ["--match", "id:7", "--stdin"]
-                for call in calls
-            )
-        )
+        self.assertFalse(any("send-text" in call["args"] for call in self.calls()))
+        self.assertFalse(any("get-text" in call["args"] for call in self.calls()))
+        self.assertFalse(any("launch" in call["args"] for call in self.calls()))
+
+        parent_env = env.copy()
+        parent_env.update({
+            "CREW_SESSION_ID": self.parent_session,
+            "CREW_INBOX": str(parent_inbox),
+            "CREW_CLI": "pi",
+        })
+        claimed = self.run_helper("_mailbox", "claim", env=parent_env)
+        self.assertEqual(json.loads(claimed.stdout)["id"], message["id"])
+        ack = self.run_helper("ack", message["id"], env=parent_env)
+        self.assertEqual(ack.returncode, 0, ack.stderr)
+        self.assertTrue((parent_inbox / "received" / pending[0].name).is_file())
 
     def test_notify_uses_unavailable_when_metrics_are_missing(self):
         report = self.root / "report.md"
@@ -888,12 +932,10 @@ class NodesTest(unittest.TestCase):
             "notify", "done", str(report), env=self.notify_environment()
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        calls = [call for call in self.calls() if "send-text" in call["args"]]
-        self.assertEqual(
-            calls[0]["stdin"],
-            f"crew-v1/worker: done. Report: {report}. "
-            "Metrics: metrics unavailable",
-        )
+        parent_inbox = self.crew_home / "mailboxes" / self.parent_session
+        message = json.loads(next((parent_inbox / "pending").glob("*.json")).read_text())
+        self.assertIn("Metrics: metrics unavailable", message["text"])
+        self.assertFalse(any("send-text" in call["args"] for call in self.calls()))
 
     def test_notify_uses_unavailable_when_metrics_fail(self):
         report = self.root / "report.md"
@@ -907,130 +949,23 @@ class NodesTest(unittest.TestCase):
             "notify", "done", str(report), env=self.notify_environment()
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stderr, "")
-        calls = [call for call in self.calls() if "send-text" in call["args"]]
-        self.assertEqual(
-            calls[0]["stdin"],
-            f"crew-v1/worker: done. Report: {report}. "
-            "Metrics: metrics unavailable",
-        )
+        parent_inbox = self.crew_home / "mailboxes" / self.parent_session
+        message = json.loads(next((parent_inbox / "pending").glob("*.json")).read_text())
+        self.assertIn("Metrics: metrics unavailable", message["text"])
+        self.assertFalse(any("send-text" in call["args"] for call in self.calls()))
 
-    def test_notify_detached_sender_keeps_notice_until_delivery(self):
+    def test_notify_does_not_wait_for_or_change_parent_editor(self):
         report = self.root / "report.md"
         report.write_text("completed\n", encoding="utf-8")
-        drafts = {
-            "claude": "\u001b[m❯ human is still writing",
-            "pi": self.pi_frame(("human is still writing",)),
-        }
-        for cli, draft in drafts.items():
-            with self.subTest(cli=cli):
-                self.log.write_text("", encoding="utf-8")
-                input_path = self.write_input(draft)
-                env = self.enable_test_waits(
-                    self.notify_environment(), send=2, notice=5
-                )
-                env["CREW_CLI"] = cli
-                env["FAKE_KITTEN_TEXT_FILE"] = str(input_path)
-                started = time.monotonic()
-                result = self.run_helper(
-                    "notify", "done", str(report), env=env
-                )
-                elapsed = time.monotonic() - started
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertGreaterEqual(elapsed, 0.8)
-                self.assertLess(elapsed, 5)
-                notices = self.root / "runs" / "crew-v1" / "notices"
-                pending = [
-                    path for path in notices.glob("notice.*")
-                    if not path.name.endswith(".status")
-                ]
-                self.assertEqual(len(pending), 1)
-                expected = (
-                    f"crew-v1/worker: done. Report: {report}. "
-                    "Metrics: metrics unavailable"
-                )
-                self.assertEqual(
-                    pending[0].read_text(encoding="utf-8").strip(),
-                    expected,
-                )
-                self.assertIn("human is still writing", input_path.read_text())
-                launch_call = next(
-                    call for call in self.calls()
-                    if "launch" in call["args"]
-                    and "--type=background" in call["args"]
-                )
-                for value in (
-                    "--allow-remote-control",
-                    "--copy-env",
-                    "CREW_PARENT=7",
-                    "CREW_NODES_TESTING=1",
-                    "CREW_NODES_TEST_NOTICE_WAIT_SECONDS=5",
-                    f"CREW_NOTICE_PENDING={pending[0]}",
-                ):
-                    self.assertIn(value, launch_call["args"])
-
-                clear = self.pi_frame() if cli == "pi" else (
-                    "\u001b[m❯ \u001b[22;2mTry a sample task"
-                )
-                input_path.write_text(clear, encoding="utf-8")
-                deadline = time.monotonic() + 6
-                while pending[0].exists() and time.monotonic() < deadline:
-                    time.sleep(0.05)
-                self.assertFalse(pending[0].exists())
-                calls = [
-                    call for call in self.calls()
-                    if "send-text" in call["args"]
-                ]
-                self.assertEqual(
-                    [call["stdin"] for call in calls], [expected, "\r"]
-                )
-
-    def test_detached_sender_leaves_notice_after_its_wait_limit(self):
-        pending_dir = self.root / "runs" / "crew-v1" / "notices"
-        pending_dir.mkdir(parents=True)
-        pending = pending_dir / "notice.pending"
-        pending.write_text("crew-v1/worker: done", encoding="utf-8")
-        input_path = self.write_input("\u001b[m❯ human text")
-        env = self.enable_test_waits(self.notify_environment(), notice=2)
-        env["FAKE_KITTEN_TEXT_FILE"] = str(input_path)
-        started = time.monotonic()
-        result = self.run_helper("_deliver-pending", str(pending), env=env)
-        elapsed = time.monotonic() - started
-        self.assertNotEqual(result.returncode, 0)
-        self.assertGreaterEqual(elapsed, 0.5)
-        self.assertLess(elapsed, 5)
-        self.assertEqual(
-            pending.read_text(encoding="utf-8"), "crew-v1/worker: done"
-        )
-        status = Path(f"{pending}.status").read_text(encoding="utf-8")
-        self.assertIn("state=failed", status)
-        self.assertIn("last_input=busy", status)
-        self.assertIn("Wait limit 2s expired", status)
-        self.assertFalse(
-            any("send-text" in call["args"] for call in self.calls())
-        )
-
-    def test_notify_keeps_reason_when_kitty_cannot_start_sender(self):
-        report = self.root / "report.md"
-        report.write_text("completed\n", encoding="utf-8")
-        input_path = self.write_input("\u001b[m❯ human text")
-        env = self.enable_test_waits(self.notify_environment(), send=2)
-        env["FAKE_KITTEN_TEXT_FILE"] = str(input_path)
-        env["FAKE_KITTEN_FAIL_BACKGROUND"] = "1"
+        env = self.notify_environment()
+        draft = "\\u001b[m❯ human is still writing"
+        env["FAKE_KITTEN_TEXT"] = draft
         result = self.run_helper("notify", "done", str(report), env=env)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("background sender failed", result.stderr)
-        notices = self.root / "runs" / "crew-v1" / "notices"
-        pending = [
-            path for path in notices.glob("notice.*")
-            if not path.name.endswith(".status")
-        ]
-        self.assertEqual(len(pending), 1)
-        self.assertIn("Metrics: metrics unavailable", pending[0].read_text())
-        status = Path(f"{pending[0]}.status").read_text(encoding="utf-8")
-        self.assertIn("state=failed", status)
-        self.assertIn("last_input=busy", status)
-        self.assertIn("Kitty background launch failed", status)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        parent_inbox = self.crew_home / "mailboxes" / self.parent_session
+        self.assertEqual(len(list((parent_inbox / "pending").glob("*.json"))), 1)
+        self.assertFalse(any("send-text" in call["args"] for call in self.calls()))
+        self.assertFalse(any("get-text" in call["args"] for call in self.calls()))
 
     def test_notify_requires_task_node_parent_and_report(self):
         report = self.root / "report.md"
@@ -1055,6 +990,96 @@ class NodesTest(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("existing file", result.stderr)
+
+    def test_send_publishes_to_the_target_mailbox_without_keyboard_fallback(self):
+        result = self.run_helper(
+            "send", "8", input_text="first line\nsecond line"
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("stored as pending; recipient must acknowledge:", result.stdout)
+        message_id = result.stdout.rsplit(" ", 1)[-1].strip()
+        self.assertRegex(message_id, r"^[0-9a-f-]{36}$")
+        message_path = (
+            self.crew_home / "mailboxes" / self.worker_session
+            / "pending" / f"{message_id}.json"
+        )
+        message = json.loads(message_path.read_text(encoding="utf-8"))
+        self.assertEqual(set(message), {"id", "from", "text"})
+        self.assertEqual(message["from"], self.sender_session)
+        self.assertEqual(message["text"], "first line\nsecond line")
+        self.assertFalse(any("send-text" in call["args"] for call in self.calls()))
+        self.assertFalse(any("get-text" in call["args"] for call in self.calls()))
+
+    def test_send_rejects_old_enter_options_and_unlabelled_windows(self):
+        for option in ("--enter", "--enter-only"):
+            with self.subTest(option=option):
+                result = self.run_helper(
+                    "send", "8", option, input_text="message"
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("use type", result.stderr)
+        result = self.run_helper("send", "9", input_text="message")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("crew session identity", result.stderr)
+        self.assertFalse(any("send-text" in call["args"] for call in self.calls()))
+
+    def test_ack_requires_recipient_and_is_idempotent(self):
+        result = self.run_helper("send", "8", input_text="read then ack")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        message_id = result.stdout.rsplit(" ", 1)[-1].strip()
+        destination = self.crew_home / "mailboxes" / self.worker_session
+        worker_env = self.env.copy()
+        worker_env.update({
+            "CREW_SESSION_ID": self.worker_session,
+            "CREW_INBOX": str(destination),
+            "CREW_CLI": "codex",
+        })
+        claimed = self.run_helper("_mailbox", "claim", env=worker_env)
+        self.assertEqual(json.loads(claimed.stdout)["id"], message_id)
+        wrong = self.run_helper("ack", message_id)
+        self.assertNotEqual(wrong.returncode, 0)
+        self.assertIn("not pending", wrong.stderr)
+        no_kitty = worker_env.copy()
+        no_kitty.pop("KITTY_LISTEN_ON", None)
+        ack = self.run_helper("ack", message_id, env=no_kitty)
+        self.assertEqual(ack.returncode, 0, ack.stderr)
+        self.assertTrue((destination / "received" / f"{message_id}.json").is_file())
+        duplicate = self.run_helper("ack", message_id, env=no_kitty)
+        self.assertEqual(duplicate.returncode, 0, duplicate.stderr)
+        self.assertIn("already acknowledged", duplicate.stdout)
+
+    def test_internal_claim_does_not_need_kitty(self):
+        result = self.run_helper("send", "8", input_text="claim without Kitty")
+        message_id = result.stdout.rsplit(" ", 1)[-1].strip()
+        env = self.env.copy()
+        env.update({
+            "CREW_SESSION_ID": self.worker_session,
+            "CREW_INBOX": str(self.crew_home / "mailboxes" / self.worker_session),
+        })
+        env.pop("KITTY_LISTEN_ON", None)
+        claimed = self.run_helper("_mailbox", "claim", env=env)
+        self.assertEqual(claimed.returncode, 0, claimed.stderr)
+        self.assertEqual(json.loads(claimed.stdout)["id"], message_id)
+
+    def test_codex_stale_thread_rejects_publication(self):
+        state_env = self.env.copy()
+        state_env.update({
+            "CREW_SESSION_ID": self.worker_session,
+            "CREW_INBOX": str(self.crew_home / "mailboxes" / self.worker_session),
+        })
+        result = self.run_helper(
+            "_mailbox", "codex-set", "--socket", "/tmp/fake.sock",
+            "--thread", "thread-a", "--stale", "yes",
+            "--reason", "thread changed", env=state_env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_helper("send", "8", input_text="message")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Codex conversation changed", result.stderr)
+        self.assertFalse(
+            list((self.crew_home / "mailboxes" / self.worker_session
+                  / "pending").glob("*.json"))
+        )
 
     def test_send_and_close_refuse_the_own_window(self):
         for command in (("send", "7"), ("close", "7")):
@@ -1106,6 +1131,8 @@ class NodesTest(unittest.TestCase):
             str(self.work),
             "--env",
             "CREW_CLI=codex",
+            "CREW_HOME=" + str(self.crew_home),
+            "CREW_SESSION_PREALLOCATED=1",
             "CREW_ROLE=worker",
             "CREW_NODE=reviewer",
             "CREW_TASK=crew-v1",
@@ -1115,6 +1142,7 @@ class NodesTest(unittest.TestCase):
             "--var",
             "crew_node=reviewer",
             "crew_cli=codex",
+            "crew_native=0",
             "crew_role=worker",
             "crew_task=crew-v1",
             "crew_parent=7",
@@ -1123,6 +1151,18 @@ class NodesTest(unittest.TestCase):
         ):
             self.assertIn(value, args)
         self.assertEqual(args[-2:], [str(self.crew_bin), "codex"])
+        session_env = [arg for arg in args if arg.startswith("CREW_SESSION_ID=")]
+        self.assertEqual(len(session_env), 1)
+        session_id = session_env[0].split("=", 1)[1]
+        self.assertRegex(session_id, r"^[0-9a-f-]{36}$")
+        self.assertIn("crew_session=" + session_id, args)
+        inbox = self.crew_home / "mailboxes" / session_id
+        self.assertIn("CREW_INBOX=" + str(inbox), args)
+        metadata = json.loads((inbox / "session.json").read_text())
+        self.assertTrue(metadata["preallocated"])
+        self.assertEqual(metadata["cli"], "codex")
+        self.assertEqual(metadata["node"], "reviewer")
+        self.assertEqual(metadata["task"], "crew-v1")
         self.assertFalse(self.calls()[-1]["hyprland_set"])
         self.assertFalse(self.calls()[-1]["runtime_set"])
 
@@ -1174,6 +1214,7 @@ class NodesTest(unittest.TestCase):
             "pi-worker · pi",
             "crew_cli=pi",
             "crew_node=pi-worker",
+            "crew_native=0",
             "crew_role=worker",
             "crew_task=crew-v1",
             str(self.crew_bin),

@@ -93,6 +93,7 @@
               pkgs.git
               pkgs.jq
               pkgs.python3
+              pkgs.nodejs
               pkgs.shellcheck
             ];
           } ''
