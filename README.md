@@ -1,8 +1,8 @@
 # crew
 
-crew gives Claude Code, Codex and Pi shared instructions, skills, Kitty
-workers and private machine-local memory. It helps agents carry decisions and
-lessons across sessions and repositories.
+One shared core for Claude Code, Codex and Pi on any machine with Nix. Same
+instructions, skills and private memory in every CLI. Worker nodes in Kitty
+tabs coordinate work across repositories.
 
 ## Requirements
 
