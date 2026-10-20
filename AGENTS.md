@@ -228,6 +228,48 @@ A statement by a model is not evidence.
   employers, work repositories, internal hosts or private endpoints.
 - Do not edit other repositories.
 
+## Commits
+
+Commit subjects follow Conventional Commits:
+
+    type(scope): summary
+
+- `type` is `feat`, `fix`, `docs`, `refactor`, `test`, `chore` or `ci`.
+- `scope` is optional. Use a directory or area, such as `nodes` or `pi`.
+- Write the summary in the imperative, lowercase, without a final period.
+  Keep the whole subject to 72 characters or fewer.
+- Add a body when the reason is not obvious. Separate it from the subject
+  with a blank line. Explain why, not what.
+- Mark a breaking change with `!` after the type, such as `feat!: ...`,
+  and describe it in the body.
+- Make one logical change per commit. Keep tests with the code they cover.
+- Commits on a branch follow the same format. The squash merge then
+  replaces them with the PR title, as Pull requests describes.
+
+Commit text follows the rules in Writing and the privacy rules above.
+
+## Pull requests
+
+Open a pull request only when the human asks.
+
+- Branch from `main`. Name the branch with short, lowercase, hyphenated
+  words, such as `pi-support`.
+- Give each PR one purpose. Split unrelated changes into separate PRs.
+- Write the title like a commit subject: `type(scope): summary`.
+- Run `nix flake check` before you open the PR.
+- Write the body with these sections:
+  - `## Summary`: a short list of what changed and why.
+  - `## Checks`: each command you ran and its observed result.
+  - `## Limits`: what you did not run or could not verify, such as
+    macOS, aarch64-linux or live tests. Write `None` if nothing applies.
+- Do not claim a check passed unless you ran it and saw the result.
+- Link a related issue in the Summary with `Closes #N`, when one exists.
+- Merge with a squash merge. The PR title becomes the commit subject and the
+  PR Summary becomes its body. Keep the title in the format above.
+- Delete the branch after the merge.
+
+PR text follows the rules in Writing and the privacy rules above.
+
 ## Writing
 
 Write repository text in English. Agents answer in the human's language.
