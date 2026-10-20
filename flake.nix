@@ -5,9 +5,12 @@
     nixpkgs.url = "github:NixOS/nixpkgs/7c8764b7c7b09b34f632464276218ef9090eaa11";
     nixpkgs-claude.url = "github:NixOS/nixpkgs/7fd4004d0511991fff3a0524856a9be09e28c5f0";
     nixpkgs-codex.url = "github:NixOS/nixpkgs/8edc0c72e3a38faf5434e40d1f19431125fe4b30";
+    nixpkgs-pi.url = "github:NixOS/nixpkgs/09063bd1f2b36fd9fd793c36dfade7bd40a93dfc";
   };
 
-  outputs = inputs@{ self, nixpkgs, nixpkgs-claude, nixpkgs-codex, ... }:
+  outputs = inputs@{
+    self, nixpkgs, nixpkgs-claude, nixpkgs-codex, nixpkgs-pi, ...
+  }:
     let
       systems = [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
@@ -25,6 +28,7 @@
             inherit system;
             config.allowUnfree = true;
           };
+          piPkgs = import nixpkgs-pi { inherit system; };
           codexSource = codexPkgs.fetchFromGitHub {
             owner = "openai";
             repo = "codex";
@@ -51,7 +55,7 @@
             pkgs.kitty
             claudePkgs.claude-code
             codex
-            pkgs.pi-coding-agent
+            piPkgs.pi-coding-agent
           ];
           crew = pkgs.stdenvNoCC.mkDerivation {
             pname = "crew";
@@ -122,6 +126,7 @@
             inherit system;
             config.allowUnfree = true;
           };
+          piPkgs = import nixpkgs-pi { inherit system; };
         in {
           default = pkgs.mkShell {
             packages = with pkgs; [
@@ -131,7 +136,7 @@
               shellcheck
               bash
               coreutils
-              pi-coding-agent
+              piPkgs.pi-coding-agent
             ];
           };
         });

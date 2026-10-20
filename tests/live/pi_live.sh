@@ -14,8 +14,8 @@ pi_version=$(pi --version 2>&1) || {
   printf 'pi-live: could not read the Pi version.\n' >&2
   exit 1
 }
-[[ $pi_version == 0.75.4 ]] || {
-  printf 'pi-live: expected Pi 0.75.4, got %s\n' "$pi_version" >&2
+[[ $pi_version == 1.3.0 ]] || {
+  printf 'pi-live: expected Pi 1.3.0, got %s\n' "$pi_version" >&2
   exit 1
 }
 
@@ -274,4 +274,4 @@ done
 }
 
 printf '%s\n' \
-  'pi-live: Pi 0.75.4 spawn, delayed notice, multiline, Escape and /quit passed.'
+  'pi-live: Pi 1.3.0 spawn, delayed notice, multiline, Escape and /quit passed.'

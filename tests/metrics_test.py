@@ -32,7 +32,7 @@ class MetricsTest(unittest.TestCase):
             f"#!{sys.executable}\n"
             "import sys\n"
             "if sys.argv[1:] == ['--version']:\n"
-            "    print('0.75.4')\n"
+            "    print('1.3.0')\n"
             "else:\n"
             "    raise SystemExit(2)\n",
             encoding="utf-8",
@@ -701,7 +701,7 @@ class MetricsTest(unittest.TestCase):
         result = self.run_helper("pi", **selectors)
         self.assertEqual(result.returncode, 0, result.stderr)
         row = self.rows()[0]
-        self.assertEqual(row["cli_version"], "0.75.4")
+        self.assertEqual(row["cli_version"], "1.3.0")
         self.assertEqual(row["session_id"], session_id)
         self.assertEqual(set(row["models"]), {"pi-model-a", "pi-model-b"})
         self.assertEqual(row["usage_source"], "message_usage")
