@@ -36,8 +36,8 @@ crew pi
 
 Outside a remote-controllable Kitty session, `crew` opens its own Kitty
 window. Ask the agent to open workers and describe their tasks. The agent uses
-the `nodes` skill and helper to open Claude Code, Codex or Pi workers as Kitty
-tabs. Workers send completion notices to their parent.
+the `nodes` skill and helper to open Claude Code, Codex or Pi worker nodes as
+Kitty tabs. Workers send completion notices to their parent.
 
 Helper reference:
 
@@ -70,7 +70,7 @@ configuration. crew never passes model, provider or credential settings. Its
 default instructions forbid pushing, opening PRs, merging, or acting on
 production or shared environments without a human request.
 
-## Worker metrics
+## Node metrics
 
 Worker notices include time, tokens and cost. Each notice appends a JSON line
 at `$CREW_HOME/metrics.jsonl`, normally `~/.local/share/crew/metrics.jsonl`.

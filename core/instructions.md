@@ -41,9 +41,9 @@ writes memory; workers send other proposals to their parent.
 
 ## Collaboration
 
-Use the nodes skill to coordinate Kitty workers. Workers send completion
-notices to their parent. Do not assume a worker's claim is evidence; inspect
-its changes and verification results.
+Use the nodes skill to coordinate worker nodes through Kitty. Workers send
+completion notices to their parent. Do not assume a worker's claim is
+evidence; inspect its changes and verification results.
 
 ## Skills
 
