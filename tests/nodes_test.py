@@ -233,12 +233,13 @@ class NodesTest(unittest.TestCase):
         history="",
         context="0.0%/0 (auto) unknown",
         extension_status=None,
+        top_border=None,
     ):
         border = "\u001b[m\u001b[38:2:80:80:80m" + "─" * 40
         rows = []
         if history:
             rows.append(history)
-        rows.append(border)
+        rows.append(border if top_border is None else top_border)
         rows.extend(editor_rows)
         rows.extend((
             border,
@@ -362,6 +363,39 @@ class NodesTest(unittest.TestCase):
                     "send", "8", "--enter", input_text="test message", env=env
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_claude_context_status_preserves_clear_and_busy_states(self):
+        parser = self.helper.read_text(encoding="utf-8").split(
+            "python3 -c '\n", 1
+        )[1].split("\n') ; then", 1)[0]
+        fixtures = {
+            "clear": "\u001b[m❯ \u001b[2mTry a synthetic task",
+            "busy": "\u001b[m❯ synthetic human draft",
+        }
+        footers = {
+            "context only": ("ctx 12%/200k",),
+            "cwd and context": ("/home/u/proj", "ctx 12%/200k"),
+            "home and context": ("~/proj", "ctx 12%/200k"),
+            "cwd and bare context": ("~/proj", "12%/200k"),
+            "cwd context and bypass": (
+                "~/proj", "ctx 12%/200k", "⏵⏵ bypass",
+            ),
+            "plan mode": ("── plan mode ────",),
+        }
+        for expected, prompt in fixtures.items():
+            for label, footer in footers.items():
+                with self.subTest(state=expected, footer=label):
+                    fixture = "\n".join((
+                        "─" * 40, prompt, "\u001b[m" + "─" * 40,
+                        *footer,
+                    ))
+                    result = subprocess.run(
+                        [os.sys.executable, "-c", parser], input=fixture,
+                        capture_output=True, text=True, env=self.env,
+                        check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), expected)
 
     def test_codex_empty_prompt_ignores_plain_footer_rows(self):
         fixture_path = ROOT / "tests/fixtures/codex-empty-prompt.json"
@@ -512,6 +546,106 @@ class NodesTest(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn("input stayed occupied", result.stderr)
                     self.assertEqual(sent, [])
+
+    def test_pi_active_working_editor_accepts_only_empty_frames(self):
+        for spinner in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏":
+            with self.subTest(spinner=spinner):
+                self.log.write_text("", encoding="utf-8")
+                env = self.enable_test_waits(self.env.copy(), send=0)
+                env["FAKE_KITTEN_TEXT"] = self.pi_frame(
+                    top_border=(
+                        "\u001b[m── \u001b[36m" + spinner
+                        + "\u001b[39m Working " + "─" * 27
+                    ),
+                    context="0.0%/1.1M (auto) model",
+                )
+                result = self.run_helper(
+                    "send", "8", "--enter", input_text="synthetic notice",
+                    env=env,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(
+                    [call["stdin"] for call in self.calls()
+                     if "send-text" in call["args"]],
+                    ["synthetic notice", "\r"],
+                )
+
+    def test_pi_active_editor_rejects_drafts_and_unknown_layouts(self):
+        active = "── ⠏ Working " + "─" * 27
+        clear = self.pi_frame(top_border=active)
+        fixtures = {
+            "draft": self.pi_frame(("synthetic human draft",),
+                                   top_border=active),
+            "dim draft": self.pi_frame(("\u001b[2mdraft",),
+                                       top_border=active),
+            "multiline": self.pi_frame(("first", "second"),
+                                       top_border=active),
+            "dialog": self.pi_frame(("Trust project folder?",),
+                                    top_border=active),
+            "overlay": self.pi_frame(("Settings", "Enter to confirm"),
+                                     top_border=active),
+            "autocomplete": clear.replace(
+                "/tmp/synthetic-project", "/help  Show help\n"
+                "/model Select model\n/tmp/synthetic-project"
+            ),
+            "wrong width": self.pi_frame(top_border=active + "─"),
+            "unknown status": self.pi_frame(
+                top_border="── ⠏ Unknown " + "─" * 27
+            ),
+            "scroll indicator": self.pi_frame(
+                top_border="── ⠏ Working ─ ↑ 2 more " + "─" * 17
+            ),
+            "missing top": clear.split("\n", 1)[1],
+            "missing top with usage": self.pi_frame(
+                context="↑1.2k ↓300 3.2%/200k model"
+            ).split("\n", 1)[1],
+            "missing top with cost": self.pi_frame(
+                context="$0.000 (sub) 3.2%/200k model"
+            ).split("\n", 1)[1],
+            "missing top with extension": self.pi_frame(
+                extension_status="synthetic extension status"
+            ).split("\n", 1)[1],
+            "missing editor row": clear.replace("\u001b[7m \u001b[27m\n", ""),
+            "missing bottom": "\n".join(clear.splitlines()[:2]
+                                           + clear.splitlines()[3:]),
+            "unknown footer": self.pi_frame(top_border=active,
+                                             context="unknown stats"),
+        }
+        histories = ("", "❯ \u001b[2mold transcript\u001b[m\n",
+                     "› \u001b[2mold suggestion\u001b[m\n")
+        for label, fixture in fixtures.items():
+            for history in histories:
+                with self.subTest(layout=label, history=history):
+                    self.log.write_text("", encoding="utf-8")
+                    env = self.enable_test_waits(self.env.copy(), send=0)
+                    env["FAKE_KITTEN_TEXT"] = history + fixture
+                    result = self.run_helper(
+                        "send", "8", "--enter",
+                        input_text="synthetic notice", env=env,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(
+                        [call for call in self.calls()
+                         if "send-text" in call["args"]], [],
+                    )
+
+    def test_pi_active_editor_rechecks_before_typing(self):
+        top = "── ⠏ Working " + "─" * 27
+        clear = self.pi_frame(top_border=top)
+        busy = self.pi_frame(("synthetic human draft",), top_border=top)
+        sequence = self.root / "active-sequence.json"
+        sequence.write_text(json.dumps([clear, busy]), encoding="utf-8")
+        env = self.enable_test_waits(self.env.copy(), send=0)
+        env["FAKE_KITTEN_SEQUENCE_FILE"] = str(sequence)
+        env["FAKE_KITTEN_SEQUENCE_COUNTER"] = str(self.root / "input-count")
+        result = self.run_helper(
+            "send", "8", "--enter", input_text="synthetic notice", env=env,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(
+            [call for call in self.calls() if "send-text" in call["args"]],
+            [],
+        )
 
     def test_pi_unrecognized_footer_does_not_fall_through_to_other_markers(
         self,

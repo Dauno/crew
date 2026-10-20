@@ -231,6 +231,12 @@ def border(row):
             and value[0] in "─━═-")
 
 
+pi_context_pattern = (
+    r"(?:^|\s)(?:\d+(?:\.\d+)?%|\?)/"
+    r"\d+(?:\.\d+)?[kM]?(?:\s|$)"
+)
+
+
 def pi_frame_bounds():
     visible_rows = [index for index, row in enumerate(rows)
                     if plain(row).strip()]
@@ -249,7 +255,15 @@ def pi_frame_bounds():
             continue
         top_index = None
         for index in range(lower_index - 1, -1, -1):
-            if border(rows[index]) and plain(rows[index]) == lower_border:
+            upper_border = plain(rows[index])
+            matching_border = upper_border == lower_border
+            working_border = (
+                lower_border[0] == "─"
+                and len(upper_border) == len(lower_border)
+                and re.fullmatch(r"── [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Working ─+",
+                                 upper_border) is not None
+            )
+            if matching_border or working_border:
                 top_index = index
                 break
         if top_index is None or top_index + 1 >= lower_index:
@@ -276,11 +290,7 @@ def pi_state():
         return "busy"
 
     stats = plain(rows[footer_indexes[1]]).strip()
-    context_pattern = (
-        r"(?:^|\s)(?:\d+(?:\.\d+)?%|\?)/"
-        r"\d+(?:\.\d+)?[kM]?(?:\s|$)"
-    )
-    if not re.search(context_pattern, stats):
+    if not re.search(pi_context_pattern, stats):
         return "unknown"
     return "clear"
 
@@ -308,11 +318,26 @@ marker_foreground = row[char_index][2]
 marker = row[char_index][0]
 
 pi_frame_lines = sum(
-    re.fullmatch(r"─+|─── [↑↓] \d+ more ─*", plain(following).strip())
+    re.fullmatch(r"─+|─── [↑↓] \d+ more ─*|── [⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] Working ─+",
+                 plain(following).strip())
     is not None
     for following in rows[row_index + 1:]
 )
-if pi_frame_lines >= 2:
+pi_tail = [plain(following).strip() for following in rows[row_index + 1:]
+           if plain(following).strip()]
+# Require Pi usage counters, cost, or its default auto-compaction marker.
+pi_footer = any(
+    len(pi_tail) >= footer_size + 1
+    and re.match(r"^(?:/|~(?:/|$))", pi_tail[-footer_size])
+    and re.search(pi_context_pattern, pi_tail[-footer_size + 1])
+    and (
+        re.match(r"^(?:[↑↓RW]\d|\$\d)", pi_tail[-footer_size + 1])
+        or re.match(pi_context_pattern + r"\(auto\)(?:\s|$)",
+                    pi_tail[-footer_size + 1])
+    )
+    for footer_size in (2, 3)
+)
+if pi_frame_lines >= 2 or (pi_frame_lines and pi_footer):
     print("unknown")
     raise SystemExit
 
