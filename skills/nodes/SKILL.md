@@ -21,9 +21,13 @@ command. This matches Claude Code's preapproved rule for the helper.
 crew-nodes list
 crew-nodes read 123 screen
 crew-nodes read 123 all
-crew-nodes send 123 --enter <<'MESSAGE'
-Task: example. Please finish the assigned work and report to the coordinator.
+crew-nodes send 123 <<'MESSAGE'
+Please review the generic example and report your findings.
 MESSAGE
+crew-nodes type 123 --enter <<'INPUT'
+/clear
+INPUT
+crew-nodes ack 550e8400-e29b-41d4-a716-446655440000
 crew-nodes spawn --name reviewer --cli claude \
   --cwd /path/to/repository --task example
 crew-nodes interrupt 456
@@ -36,14 +40,14 @@ Workers send their one-line notice to their parent with `notify`:
 crew-nodes notify done /path/to/report.md
 ```
 
-The helper records metrics and adds `Metrics: <summary>` to the notice.
-Metrics stay in `$CREW_HOME/metrics.jsonl`. If the parent input stays
-occupied for 60 seconds, a detached sender retries for up to one hour.
-The pending notice stays in `$CREW_RUNS/<task>/notices/` until delivery.
-The sender records its state and failure reason beside it in a `.status` file.
+The helper records one metrics line and publishes the existing notice text
+through the parent's native mailbox. Metrics stay in
+`$CREW_HOME/metrics.jsonl`. The command succeeds after storage, not receipt.
 
-The helper formats the notice and sends it to the `CREW_PARENT` window.
-Use the exact window ID shown by `crew-nodes list` for other destinations.
+`send ID` stores text in the session labeled by that Kitty window ID.
+It does not inspect or type into the target editor. Use `type ID` only for
+explicit terminal input. `notify` resolves `CREW_PARENT` through the parent's
+`crew_session` label. `list` shows the crew labels needed for routing.
 
 `list` prints one JSON object per window. Each object includes its ID, title,
 working directory, foreground command, `crew_*` variables and `self` flag.
@@ -51,23 +55,33 @@ Confirm the exact ID and command with `list` before sending. Never send to a
 window marked `self` or to your own window. The helper rejects sends,
 interrupts and closes to its own window.
 
-`send` reads nonempty text from standard input. It removes carriage returns
-before sending. With `--enter`, it waits up to 60 seconds for an empty input,
-sends the text, waits 0.5 seconds, then sends Return separately. Styled
-placeholders and suggestions do not count as human text. An unrecognized
-input times out instead of blocking forever. Empty input fails; use
-`send ID --enter-only` to send Return without reading standard input. Workers
-use `notify STATUS REPORT` instead of formatting their own completion message.
+`send ID` reads nonempty UTF-8 text from standard input and stores it
+atomically. Messages allow up to 8 KiB of UTF-8 text. For longer reports,
+write a file and send its path. The receiver presents the message ID and
+sender to the agent.
+After reading the message, the agent runs `crew-nodes ack MESSAGE_ID`.
+Only that explicit command marks it received. It does not mean task
+completion.
 
-Send each message once. Do not poll or run a forwarding loop. Wait for the
-worker's notice, then read its window when you need a deliberate status check.
-A successful send proves delivery to Kitty, not acceptance or completion.
+`ack` validates the current `CREW_SESSION_ID` and accepts only the current
+session's dispatched message. Repeating an acknowledgement is harmless.
+Receivers hold one delivery marker until that acknowledgement. They never
+reinject a pending message on each poll or signal. A crash after reserving
+delivery leaves the message held for explicit reconciliation; crew does not
+promise exactly-once delivery.
+
+`send --enter` and `send --enter-only` fail with guidance to use `type`.
+`type ID` keeps the previous raw Kitty input behavior. Its `--enter` form
+waits for a clear, recognized editor. Its `--enter-only` form sends Return
+only.
+Agent task messages must never fall back to `type`.
 
 ## Check a worker before messaging
 
 After `spawn`, read the worker screen before sending its brief. Confirm the
-interactive editor is ready and no dialog is open. A title or process alone
-does not prove readiness.
+CLI is ready and no trust or permission dialog is open. A title or process
+alone does not prove readiness. Native messages do not require an empty
+editor.
 
 Claude Code can ask whether to trust a new project. Codex can also ask for
 repository trust. Pi can ask whether to trust project resources under `.pi`.
@@ -77,12 +91,12 @@ Ask the human to answer trust or permissions dialogs in that worker's tab.
 Never answer a dialog yourself or send a brief to it. Return could accept it.
 Pi 1.3.0 has no tool permission prompts and needs no bypass flag.
 
+`send` and `notify` never inspect or change the destination editor.
+`type --enter` uses Kitty screen parsing to avoid replacing human input.
 Pi draws its editor between matching full-width horizontal borders above two
-footer rows. Draft text keeps a notice waiting, regardless of its color.
-Long drafts can show scroll indicators. Autocomplete lists, overlays,
-incomplete frames and unknown editor layouts keep notices waiting too. An
-empty editor remains available while Pi runs a command, so it can accept a
-notice or steering input. The helper rechecks the editor before sending.
+footer rows. Drafts, scroll indicators, autocomplete lists, overlays,
+incomplete frames and unknown layouts make `type --enter` wait or fail closed.
+The Pi extension never parses or writes to the editor.
 
 ```bash
 crew-nodes read 456 screen
@@ -135,9 +149,9 @@ draft, so inspect the screen before sending a stop command.
 ## Spawn and report
 
 `spawn` requires `CREW_BIN` and a running Kitty window. It creates a worker
-tab with the selected CLI, task labels and parent window ID. It prints the
-new ID. Keep the worker's task, repository and report path explicit in its
-brief.
+tab with a fresh `CREW_SESSION_ID`, `CREW_INBOX`, task labels and parent ID.
+It prints the new window ID. Keep the worker's task, repository and report
+path explicit in its brief.
 Pass CLI arguments after `--` only when the human requests a model or option.
 By default, each worker uses its CLI's default model. A brief alone does not
 change a model; pass the requested model in the `spawn` command.

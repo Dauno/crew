@@ -40,9 +40,30 @@ default_core_instructions=$source_root/core/instructions.md
 CREW_CORE_INSTRUCTIONS=${CREW_CORE_INSTRUCTIONS:-$default_core_instructions}
 CREW_SKILLS=${CREW_SKILLS:-$source_root/skills}
 CREW_PLUGIN=${CREW_PLUGIN:-$source_root/claude}
+CREW_HOME=${XDG_DATA_HOME:-$HOME/.local/share}/crew
+CREW_MEMORY=$CREW_HOME/memory
+CREW_RUNS=$CREW_HOME/runs
+if [[ ${CREW_SESSION_PREALLOCATED:-} != 1 ]]; then
+  unset CREW_SESSION_PREALLOCATED
+  CREW_SESSION_ID=$(python3 -c 'import uuid; print(uuid.uuid4())')
+fi
+[[ ${CREW_SESSION_ID:-} =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || {
+  printf 'crew: invalid CREW_SESSION_ID.\n' >&2
+  exit 2
+}
+CREW_INBOX=$CREW_HOME/mailboxes/$CREW_SESSION_ID
 export CREW_BIN CREW_CORE_INSTRUCTIONS CREW_SKILLS CREW_PLUGIN
+export CREW_HOME CREW_MEMORY CREW_RUNS CREW_SESSION_ID CREW_INBOX
 
 if [[ -z ${KITTY_LISTEN_ON:-} ]] || ! kitten @ ls >/dev/null 2>&1; then
+  if [[ ${CREW_SESSION_PREALLOCATED:-} != 1 ]]; then
+    CREW_SESSION_PREALLOCATED=1
+    export CREW_SESSION_PREALLOCATED
+    python3 "$CREW_SKILLS/nodes/scripts/mailbox.py" reserve \
+      --cli "$cli_name" --node "${CREW_NODE:-}" --task "${CREW_TASK:-}" \
+      --parent "${CREW_PARENT:-}" --started-at "${CREW_STARTED_AT:-}" \
+      >/dev/null
+  fi
   temp_dir=${TMPDIR:-/tmp}
   socket_path="$temp_dir/crew-${UID:-0}-$$-${RANDOM}-${RANDOM}.sock"
   while [[ -e $socket_path ]]; do
@@ -57,10 +78,87 @@ if [[ -z ${KITTY_LISTEN_ON:-} ]] || ! kitten @ ls >/dev/null 2>&1; then
 fi
 
 export CREW_CLI=$cli_name
-CREW_HOME=${XDG_DATA_HOME:-$HOME/.local/share}/crew
-CREW_MEMORY=$CREW_HOME/memory
-CREW_RUNS=$CREW_HOME/runs
-export CREW_HOME CREW_MEMORY CREW_RUNS
+
+codex_non_tui_command() {
+  local index=0 argument command=''
+  while (( index < ${#cli_args[@]} )); do
+    argument=${cli_args[index]}
+    case $argument in
+      --config|-c|--enable|--disable|--remote|--remote-auth-token-env|\
+      -i|--image|-m|--model|--local-provider|-p|--profile|-C|--cd|\
+      --add-dir|-a|--ask-for-approval|-s|--sandbox)
+        ((index += 2))
+        ;;
+      --config=*|--enable=*|--disable=*|--remote=*|\
+      --remote-auth-token-env=*|--image=*|--model=*|--local-provider=*|\
+      --profile=*|--cd=*|--add-dir=*|--ask-for-approval=*|--sandbox=*)
+        ((index += 1))
+        ;;
+      --help|-h|--version|-V)
+        return 0
+        ;;
+      --)
+        return 1
+        ;;
+      -*)
+        ((index += 1))
+        ;;
+      *)
+        command=$argument
+        break
+        ;;
+    esac
+  done
+  case $command in
+    agents|exec|e|review|login|logout|mcp|plugin|app-server|\
+    remote-control|completion|update|doctor|sandbox|debug|apply|a|queue|\
+    archive|delete|migrate-rollouts|unarchive|exec-server|features|help)
+      return 0
+      ;;
+    cloud)
+      case ${cli_args[index+1]:-} in
+        exec|status) return 0 ;;
+      esac
+      ;;
+  esac
+  return 1
+}
+
+native_receiver=0
+cli_args=("$@")
+if [[ -t 0 && -t 1 ]]; then
+  native_receiver=1
+  case $cli_name in
+    claude)
+      for arg in "${cli_args[@]}"; do
+        [[ $arg == --print || $arg == -p ]] && native_receiver=0
+      done
+      ;;
+    codex)
+      if codex_non_tui_command; then
+        native_receiver=0
+      fi
+      ;;
+    pi)
+      for ((index=0; index < ${#cli_args[@]}; index++)); do
+        arg=${cli_args[index]}
+        [[ $arg == --print || $arg == -p || $arg == --mode=json ||
+          $arg == --mode=rpc ]] && native_receiver=0
+        if [[ $arg == --mode ]] && (( index + 1 < ${#cli_args[@]} )); then
+          [[ ${cli_args[index+1]} == json || ${cli_args[index+1]} == rpc ]] &&
+            native_receiver=0
+        fi
+      done
+      ;;
+  esac
+fi
+if [[ ! ${KITTY_WINDOW_ID:-} =~ ^[1-9][0-9]*$ ]]; then
+  native_receiver=0
+fi
+owns_kitty_route=0
+if [[ ${CREW_SESSION_PREALLOCATED:-} == 1 || $native_receiver == 1 ]]; then
+  owns_kitty_route=1
+fi
 
 repo_id() {
   local origin
@@ -110,10 +208,11 @@ repo_memory+=${CREW_REPO_ID//\//_}
 
 umask 077
 mkdir -p "$CREW_HOME" "$CREW_MEMORY/global" "$CREW_MEMORY/machine" \
-  "$CREW_MEMORY/repos" "$repo_memory" "$CREW_RUNS"
+  "$CREW_MEMORY/repos" "$repo_memory" "$CREW_RUNS" \
+  "$CREW_HOME/mailboxes"
 chmod 700 "$CREW_HOME" "$CREW_MEMORY" "$CREW_MEMORY/global" \
   "$CREW_MEMORY/machine" "$CREW_MEMORY/repos" "$repo_memory" \
-  "$CREW_RUNS"
+  "$CREW_RUNS" "$CREW_HOME/mailboxes"
 
 create_index() {
   local path=$1
@@ -128,6 +227,22 @@ create_index "$CREW_MEMORY/global/index.md" 'Global memory'
 create_index "$CREW_MEMORY/machine/index.md" 'Machine memory'
 create_index "$CREW_MEMORY/repos/index.md" 'Repository memory'
 create_index "$repo_memory/index.md" 'Repository memory'
+mailbox_init=(
+  python3 "$CREW_SKILLS/nodes/scripts/mailbox.py" init
+  --cli "$cli_name" --node "${CREW_NODE:-}" --task "${CREW_TASK:-}"
+  --parent "${CREW_PARENT:-}" --window "${KITTY_WINDOW_ID:-}"
+  --started-at "${CREW_STARTED_AT:-}" --native "$native_receiver"
+)
+if [[ ${CREW_SESSION_PREALLOCATED:-} == 1 ]]; then
+  mailbox_init+=(--consume-reservation)
+fi
+"${mailbox_init[@]}" >/dev/null
+unset CREW_SESSION_PREALLOCATED
+if [[ $owns_kitty_route == 1 && ${KITTY_WINDOW_ID:-} =~ ^[1-9][0-9]*$ ]]; then
+  kitten @ set-user-vars --match "id:$KITTY_WINDOW_ID" \
+    "crew_session=$CREW_SESSION_ID" "crew_cli=$cli_name" \
+    "crew_native=$native_receiver"
+fi
 
 if [[ ! -f $CREW_CORE_INSTRUCTIONS ]]; then
   printf 'crew: missing core instructions: %s\n' \
@@ -136,8 +251,30 @@ if [[ ! -f $CREW_CORE_INSTRUCTIONS ]]; then
 fi
 
 instructions_file=$(mktemp "${TMPDIR:-/tmp}/crew-instructions.XXXXXX")
+codex_server_pid=''
+codex_receiver_pid=''
+codex_socket_dir=''
 cleanup() {
+  local status=$?
+  trap - EXIT
+  if [[ -n $codex_receiver_pid ]]; then
+    kill "$codex_receiver_pid" 2>/dev/null || true
+    wait "$codex_receiver_pid" 2>/dev/null || true
+  fi
+  if [[ -n $codex_server_pid ]]; then
+    kill "$codex_server_pid" 2>/dev/null || true
+    wait "$codex_server_pid" 2>/dev/null || true
+  fi
+  if [[ -n $codex_socket_dir ]]; then
+    rm -rf -- "$codex_socket_dir"
+  fi
+  if [[ $owns_kitty_route == 1 &&
+    ${KITTY_WINDOW_ID:-} =~ ^[1-9][0-9]*$ ]]; then
+    kitten @ set-user-vars --match "id:$KITTY_WINDOW_ID" \
+      crew_session= crew_cli= crew_native=0 >/dev/null 2>&1 || true
+  fi
   rm -f -- "$instructions_file"
+  exit "$status"
 }
 trap cleanup EXIT
 cat -- "$CREW_CORE_INSTRUCTIONS" > "$instructions_file"
@@ -161,6 +298,8 @@ cat >> "$instructions_file" <<EOF
 - Task: $(session_value CREW_TASK)
 - Parent Kitty window: $(session_value CREW_PARENT)
 - Repository ID: $CREW_REPO_ID
+- Session ID: $CREW_SESSION_ID
+- Mailbox: $CREW_INBOX
 - Memory: $CREW_MEMORY
 - Runs: $CREW_RUNS
 - Skills: $CREW_SKILLS
@@ -208,12 +347,68 @@ PY
   if [[ ${CREW_ROLE:-} == worker ]]; then
     codex_args+=(--dangerously-bypass-approvals-and-sandbox)
   fi
+  if [[ $native_receiver == 1 ]]; then
+    for arg in "${cli_args[@]}"; do
+      case $arg in
+        --remote|--remote=*|--no-daemon)
+          printf 'crew: interactive Codex owns its app-server; remove %s.\n' \
+            "$arg" >&2
+          exit 2
+          ;;
+      esac
+    done
+    codex_socket_dir=$(mktemp -d "${TMPDIR:-/tmp}/crew-codex.XXXXXX")
+    chmod 700 "$codex_socket_dir"
+    codex_socket=$codex_socket_dir/app.sock
+    (( ${#codex_socket} < 90 )) || {
+      printf 'crew: TMPDIR path is too long for a Codex Unix socket.\n' >&2
+      exit 1
+    }
+    codex_endpoint="unix://$codex_socket"
+    codex app-server --listen "$codex_endpoint" \
+      --config "developer_instructions=$developer_instructions" \
+      >"$codex_socket_dir/app-server.log" 2>&1 &
+    codex_server_pid=$!
+    for _ in {1..100}; do
+      [[ -S $codex_socket ]] && break
+      kill -0 "$codex_server_pid" 2>/dev/null || {
+        printf 'crew: Codex app-server exited during startup.\n' >&2
+        exit 1
+      }
+      sleep 0.1
+    done
+    [[ -S $codex_socket ]] || {
+      printf 'crew: Codex app-server socket did not become ready.\n' >&2
+      exit 1
+    }
+    python3 "$CREW_SKILLS/nodes/scripts/mailbox.py" codex-set \
+      --socket "$codex_socket" --stale no
+    python3 "$CREW_SKILLS/nodes/scripts/codex_receiver.py" \
+      --socket "$codex_socket" >>"$CREW_INBOX/codex-receiver.log" 2>&1 &
+    codex_receiver_pid=$!
+    for _ in {1..100}; do
+      [[ -f $CREW_INBOX/.codex-receiver-ready ]] && break
+      kill -0 "$codex_receiver_pid" 2>/dev/null || {
+        printf 'crew: Codex mailbox receiver failed to start.\n' >&2
+        exit 1
+      }
+      sleep 0.1
+    done
+    [[ -f $CREW_INBOX/.codex-receiver-ready ]] || {
+      printf 'crew: Codex mailbox receiver did not become ready.\n' >&2
+      exit 1
+    }
+    codex_args+=(--remote "$codex_endpoint")
+  fi
   codex "${codex_args[@]}" "$@"
 else
   pi_args=(
     --append-system-prompt "$instructions_file"
     --skill "$CREW_SKILLS"
   )
+  if [[ $native_receiver == 1 ]]; then
+    pi_args+=(--extension "$CREW_SKILLS/nodes/extensions/crew-messages.ts")
+  fi
   if [[ ${CREW_ROLE:-} == worker ]]; then
     pi_task=${CREW_TASK:-_untasked}
     [[ -n $pi_task && $pi_task != . && $pi_task != .. &&

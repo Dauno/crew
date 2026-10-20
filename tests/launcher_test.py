@@ -1,6 +1,7 @@
 import json
 import os
 import pathlib
+import pty
 import shutil
 import stat
 import subprocess
@@ -43,6 +44,10 @@ class LauncherTest(unittest.TestCase):
         helper.parent.mkdir(parents=True)
         helper.write_text("#!/usr/bin/env bash\nexit 0\n")
         helper.chmod(0o755)
+        shutil.copy2(REPO / "skills/nodes/scripts/mailbox.py",
+                     helper.parent / "mailbox.py")
+        shutil.copy2(REPO / "skills/nodes/scripts/codex_receiver.py",
+                     helper.parent / "codex_receiver.py")
         for name in ("nodes", "memory", "onboard"):
             skill_dir = self.skills / name
             skill_dir.mkdir(exist_ok=True)
@@ -73,6 +78,9 @@ record = {"args": sys.argv[1:], "cwd": os.getcwd(),
           "path": os.environ.get("PATH", ""),
           "env": {key: os.environ[key] for key in keys if key in os.environ}}
 args = sys.argv[1:]
+for name in ("CREW_SESSION_ID", "CREW_INBOX"):
+    if name in os.environ:
+        record["env"][name] = os.environ[name]
 if "--append-system-prompt-file" in args:
     path = args[args.index("--append-system-prompt-file") + 1]
     record["instructions"] = pathlib.Path(path).read_text()
@@ -102,6 +110,9 @@ args = sys.argv[1:]
 record = {"args": args, "cwd": os.getcwd(),
           "path": os.environ.get("PATH", ""),
           "env": {key: os.environ[key] for key in keys if key in os.environ}}
+for name in ("CREW_SESSION_ID", "CREW_INBOX"):
+    if name in os.environ:
+        record["env"][name] = os.environ[name]
 if "--config" in args:
     value = args[args.index("--config") + 1]
     if value.startswith("developer_instructions="):
@@ -120,6 +131,9 @@ record = {"args": args, "cwd": os.getcwd(),
               "CREW_BIN", "CREW_CLI", "CREW_ROLE", "CREW_NODE",
               "CREW_TASK", "CREW_PARENT", "CREW_REPO_ID",
           ) if key in os.environ}}
+for name in ("CREW_SESSION_ID", "CREW_INBOX"):
+    if name in os.environ:
+        record["env"][name] = os.environ[name]
 if "--append-system-prompt" in args:
     path = args[args.index("--append-system-prompt") + 1]
     record["instructions"] = pathlib.Path(path).read_text()
@@ -190,11 +204,41 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
             stderr=subprocess.PIPE,
             check=False,
         )
-        self.assertEqual(result.returncode, expected, result.stderr)
+        if result.returncode != expected:
+            logs = list((self.home / ".local/share/crew/mailboxes").glob(
+                "*/codex-receiver.log"
+            ))
+            detail = "\n".join(path.read_text() for path in logs)
+            self.fail(result.stderr + detail)
         return result
 
     def _record(self):
         return json.loads(self.capture.read_text())
+
+    def _run_tty(self, *args, env=None, expected=0):
+        master, slave = pty.openpty()
+        try:
+            result = subprocess.run(
+                ["bash", str(LAUNCHER), *args],
+                cwd=self.project,
+                env=env or self._env(),
+                stdin=slave,
+                stdout=slave,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+        finally:
+            os.close(master)
+            os.close(slave)
+        if result.returncode != expected:
+            logs = list((self.home / ".local/share/crew/mailboxes").glob(
+                "*/codex-receiver.log"
+            ))
+            detail = "\n".join(path.read_text() for path in logs)
+            self.fail(result.stderr + detail)
+        return result
 
     def test_cli_arguments_and_exported_environment(self):
         self._git(
@@ -231,6 +275,88 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         self.assertEqual(record["env"]["CREW_BIN"], str(LAUNCHER))
         self.assertNotIn("CREW_ROLE", record["env"])
 
+    def test_inherited_session_gets_fresh_identity_without_parent_route_mutation(self):
+        inherited = "11111111-1111-4111-8111-111111111111"
+        inbox = self.home / ".local/share/crew/mailboxes" / inherited
+        env = self._env(
+            CREW_SESSION_ID=inherited,
+            CREW_INBOX=str(inbox),
+            KITTY_WINDOW_ID="42",
+        )
+        self._run("pi", "--offline", env=env)
+        first = self._record()["env"]
+        first_session = first["CREW_SESSION_ID"]
+        self.assertNotEqual(first_session, inherited)
+        self.assertEqual(
+            first["CREW_INBOX"],
+            str(self.home / ".local/share/crew/mailboxes" / first_session),
+        )
+        self.assertFalse(inbox.exists())
+        self.assertEqual(
+            json.loads((self.root / "kitty-capture.json").read_text())["args"],
+            ["@", "ls"],
+        )
+
+        self._run("claude", "--print", env=env)
+        second = self._record()["env"]
+        self.assertNotEqual(second["CREW_SESSION_ID"], inherited)
+        self.assertNotEqual(second["CREW_SESSION_ID"], first_session)
+        self.assertEqual(
+            json.loads((self.root / "kitty-capture.json").read_text())["args"],
+            ["@", "ls"],
+        )
+
+    def test_preallocated_session_is_consumed_by_launcher(self):
+        session_id = "22222222-2222-4222-8222-222222222222"
+        crew_home = self.home / ".local/share/crew"
+        inbox = crew_home / "mailboxes" / session_id
+        env = self._env(
+            CREW_HOME=str(crew_home),
+            CREW_SESSION_ID=session_id,
+            CREW_INBOX=str(inbox),
+            CREW_SESSION_PREALLOCATED="1",
+            CREW_NODE="worker",
+            CREW_TASK="task-a",
+            CREW_PARENT="9",
+            KITTY_WINDOW_ID="42",
+        )
+        reserve = subprocess.run(
+            [sys.executable, str(self.skills / "nodes/scripts/mailbox.py"),
+             "reserve", "--cli", "pi", "--node", "worker",
+             "--task", "task-a", "--parent", "9"],
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(reserve.returncode, 0, reserve.stderr)
+        self._run("pi", "--offline", env=env)
+        record = self._record()
+        self.assertEqual(record["env"]["CREW_SESSION_ID"], session_id)
+        metadata = json.loads((inbox / "session.json").read_text())
+        self.assertFalse(metadata["preallocated"])
+        self.assertEqual(metadata["cli"], "pi")
+        self.assertEqual(metadata["window_id"], "42")
+
+    def test_codex_global_options_before_utility_skip_app_server(self):
+        invocations = (
+            ("--model", "generic-model", "exec", "fixture only"),
+            ("--profile", "fixture", "doctor"),
+            ("mcp", "list"),
+            ("plugin", "list"),
+            ("archive", "fixture-session"),
+            ("cloud", "status"),
+        )
+        for arguments in invocations:
+            with self.subTest(arguments=arguments):
+                self._run_tty(
+                    "codex", *arguments,
+                    env=self._env(KITTY_WINDOW_ID="12"),
+                )
+                record = self._record()
+                self.assertEqual(record["args"][-len(arguments):], list(arguments))
+                self.assertNotIn("app-server", record["args"])
+
     def test_xdg_data_home_sets_crew_home(self):
         data_home = self.root / "custom-data"
         self._run("codex", env=self._env(XDG_DATA_HOME=str(data_home)))
@@ -250,6 +376,14 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         )
         self.assertTrue((data_home / "crew/memory").is_dir())
         self.assertTrue((data_home / "crew/runs").is_dir())
+        mailbox_root = data_home / "crew/mailboxes"
+        sessions = list(mailbox_root.iterdir())
+        self.assertEqual(len(sessions), 1)
+        self.assertRegex(sessions[0].name, r"^[0-9a-f-]{36}$")
+        self.assertEqual(
+            json.loads((sessions[0] / "session.json").read_text())["session_id"],
+            sessions[0].name,
+        )
         self.assertEqual(list(self.home.iterdir()), [])
 
     def test_initial_memory_indices_and_permissions(self):
@@ -268,6 +402,7 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
             memory / "repos": None,
             memory / "repos/github.com_acme_widget": "# Repository memory\n",
             self.home / ".local/share/crew/runs": None,
+            self.home / ".local/share/crew/mailboxes": None,
         }
         for path, contents in paths.items():
             self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700, path)
@@ -342,6 +477,8 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
             record["instructions"],
         )
         self.assertIn("Nodes helper: crew-nodes", record["instructions"])
+        self.assertIn("Session ID: ", record["instructions"])
+        self.assertIn("Mailbox: ", record["instructions"])
         self.assertNotIn(str(helper), record["instructions"])
         self.assertEqual(
             shutil.which("crew-nodes", path=record["path"]),
@@ -427,6 +564,22 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         self.assertNotIn("--session-dir", record["args"])
         self.assertNotIn("--dangerously-skip-permissions", record["args"])
         self.assertEqual(list(self.tmp.glob("crew-instructions.*")), [])
+
+    def test_interactive_pi_loads_native_session_extension(self):
+        self._run_tty("pi", "--offline", env=self._env(KITTY_WINDOW_ID="42"))
+        record = self._record()
+        extension_index = record["args"].index("--extension") + 1
+        self.assertEqual(
+            record["args"][extension_index],
+            str(self.skills / "nodes/extensions/crew-messages.ts"),
+        )
+        session_dirs = list(
+            (self.home / ".local/share/crew/mailboxes").iterdir()
+        )
+        self.assertEqual(len(session_dirs), 1)
+        metadata = json.loads((session_dirs[0] / "session.json").read_text())
+        self.assertTrue(metadata["native"])
+        self.assertEqual(metadata["cli"], "pi")
 
     def test_pi_worker_uses_private_isolated_session_directory(self):
         task = "task-a"
@@ -568,6 +721,101 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
             codex_received["OPENAI_BASE_URL"],
             "https://example.invalid/v1",
         )
+
+    def test_interactive_codex_uses_private_app_server_socket(self):
+        self._write_program(
+            "codex",
+            f"#!{sys.executable}\n" + r'''import base64, hashlib, json, os, pathlib, socket, struct, sys
+args = sys.argv[1:]
+def read_exact(connection, count):
+    chunks = bytearray()
+    while len(chunks) < count:
+        chunk = connection.recv(count - len(chunks))
+        if not chunk:
+            raise OSError("client disconnected")
+        chunks.extend(chunk)
+    return bytes(chunks)
+def run_server():
+    endpoint = args[args.index("--listen") + 1]
+    path = endpoint.removeprefix("unix://")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(path)
+    server.listen(1)
+    pathlib.Path(os.environ["APP_CAPTURE"]).write_text(json.dumps({"args": args}))
+    connection, _ = server.accept()
+    with connection:
+        request = bytearray()
+        while not request.endswith(b"\r\n\r\n"):
+            request.extend(connection.recv(1))
+        headers = request.decode().split("\r\n")
+        key = next(line.split(":", 1)[1].strip() for line in headers
+                   if line.lower().startswith("sec-websocket-key:"))
+        accept = base64.b64encode(hashlib.sha1(
+            (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()
+        ).digest()).decode()
+        connection.sendall(("HTTP/1.1 101 Switching Protocols\r\n"
+            "Upgrade: websocket\r\nConnection: Upgrade\r\n"
+            f"Sec-WebSocket-Accept: {accept}\r\n\r\n").encode())
+        while True:
+            first, second = read_exact(connection, 2)
+            length = second & 0x7f
+            if length == 126:
+                length = struct.unpack("!H", read_exact(connection, 2))[0]
+            elif length == 127:
+                length = struct.unpack("!Q", read_exact(connection, 8))[0]
+            mask = read_exact(connection, 4)
+            payload = read_exact(connection, length)
+            payload = bytes(value ^ mask[index % 4]
+                            for index, value in enumerate(payload))
+            if first & 0x0f == 8:
+                break
+            request = json.loads(payload)
+            if "id" not in request:
+                continue
+            result = (
+                {"codexHome": os.environ.get("CODEX_HOME", "")}
+                if request["method"] == "initialize" else {"data": []}
+            )
+            response = json.dumps({"id": request["id"],
+                                   "result": result}).encode()
+            if len(response) < 126:
+                frame = bytes([0x81, len(response)])
+            else:
+                frame = bytes([0x81, 126]) + struct.pack("!H", len(response))
+            connection.sendall(frame + response)
+    server.close()
+if args[:1] == ["app-server"]:
+    run_server()
+else:
+    record = {"args": args, "cwd": os.getcwd(), "env": {
+        key: os.environ[key] for key in (
+            "CREW_SESSION_ID", "CREW_INBOX", "CREW_CLI", "CREW_ROLE"
+        ) if key in os.environ}}
+    pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(record))
+''',
+        )
+        env = self._env(KITTY_WINDOW_ID="12", APP_CAPTURE=str(self.root / "appserver.json"))
+        self._run_tty("codex", env=env)
+        record = self._record()
+        args = record["args"]
+        self.assertIn("--remote", args)
+        endpoint = args[args.index("--remote") + 1]
+        self.assertTrue(endpoint.startswith("unix://"), endpoint)
+        appserver = json.loads((self.root / "appserver.json").read_text())
+        appserver_endpoint = appserver["args"][
+            appserver["args"].index("--listen") + 1
+        ]
+        self.assertEqual(endpoint, appserver_endpoint)
+        self.assertIn("--sandbox", args)
+        self.assertIn("developer_instructions=", " ".join(args))
+        self.assertRegex(record["env"]["CREW_SESSION_ID"], r"^[0-9a-f-]{36}$")
+        self.assertTrue(pathlib.Path(record["env"]["CREW_INBOX"]).is_dir())
+        codex_state = json.loads(
+            (pathlib.Path(record["env"]["CREW_INBOX"]) / "codex.json").read_text()
+        )
+        self.assertEqual(codex_state["socket_path"], endpoint.removeprefix("unix://"))
+        self.assertFalse(codex_state["stale"])
+        self.assertEqual(list(self.tmp.glob("crew-codex.*")), [])
 
     def test_reopens_kitty_without_socket(self):
         env = self._env()

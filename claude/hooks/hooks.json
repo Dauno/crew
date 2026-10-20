@@ -1,0 +1,30 @@
+{
+  "description": "Deliver crew mailbox messages to the current Claude session",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "crew-nodes",
+            "args": ["claude-hook"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "FileChanged": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "crew-nodes",
+            "args": ["claude-hook"],
+            "asyncRewake": true,
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

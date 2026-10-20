@@ -4,7 +4,8 @@ set -euo pipefail
 
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 helper=$root/skills/nodes/scripts/nodes.sh
-for program in kitty kitten jq awk python3; do
+mailbox=$root/skills/nodes/scripts/mailbox.py
+for program in kitty kitten jq python3; do
   command -v "$program" >/dev/null 2>&1 || {
     printf 'nodes-live: required program not found: %s\n' "$program" >&2
     exit 1
@@ -13,28 +14,30 @@ done
 
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/crew-nodes-live.XXXXXX")
 listen_on="unix:$tmp/kitty.sock"
+parent_session=$(python3 -c 'import uuid; print(uuid.uuid4())')
+export CREW_HOME=$tmp/crew
+export CREW_RUNS=$tmp/runs
+export CREW_SESSION_ID=$parent_session
+export CREW_INBOX=$CREW_HOME/mailboxes/$CREW_SESSION_ID
+export CREW_CLI=pi
+export CREW_NODES_SCRIPT=$helper
+unset CLAUDE_CODE_SESSION_ID CODEX_THREAD_ID
 mkdir -p "$tmp/bin"
-ln -s "$helper" "$tmp/bin/crew-nodes"
-export PATH="$tmp/bin:$PATH"
+ln -s "$root/bin/crew-nodes" "$tmp/bin/crew-nodes"
+export PATH="$tmp/bin:$root/bin:$PATH"
 export CREW_LIVE_REPORT="$tmp/report.md"
-export CREW_RUNS="$tmp/runs"
-export CREW_HOME="$tmp/crew"
-export CREW_NODES_TESTING=1
-export CREW_NODES_TEST_SEND_WAIT_SECONDS=1
-export CREW_NODES_TEST_NOTICE_WAIT_SECONDS=15
+export KITTY_LISTEN_ON=$listen_on
+export CREW_ROLE=''
+
+python3 "$mailbox" init --cli pi --native 1 >/dev/null
 kitty_pid=''
 parent_id=''
 node_id=''
-worker_id=''
-notice_dir=$CREW_RUNS/live-test/notices
-pending_notice=''
-
 cleanup() {
   local status=$?
   trap - EXIT
-  if [[ -n $node_id && -n $parent_id ]]; then
-    KITTY_LISTEN_ON=$listen_on KITTY_WINDOW_ID=$parent_id \
-      bash "$helper" close "$node_id" >/dev/null 2>&1 || true
+  if [[ -n $node_id ]]; then
+    crew-nodes close "$node_id" >/dev/null 2>&1 || true
   fi
   if [[ -n $kitty_pid ]]; then
     kill "$kitty_pid" 2>/dev/null || true
@@ -49,44 +52,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-find_pending_notice() {
-  local candidate
-  pending_notice=''
-  for candidate in "$notice_dir"/notice.*; do
-    [[ -f $candidate && $candidate != *.status ]] || continue
-    pending_notice=$candidate
-    return 0
-  done
-  return 1
-}
-
-report_notice_state() {
-  local status_file state=missing sender_pid='' alive=no
-  local last_input=unknown reason=none
-  find_pending_notice || true
-  if [[ -z $pending_notice ]]; then
-    printf 'nodes-live: no pending file in %s\n' "$notice_dir" >&2
-    return
-  fi
-  status_file=$pending_notice.status
-  if [[ -f $status_file ]]; then
-    state=$(awk -F= '$1 == "state" {print $2; exit}' "$status_file")
-    sender_pid=$(awk -F= '$1 == "pid" {print $2; exit}' "$status_file")
-    last_input=$(awk -F= '$1 == "last_input" {print $2; exit}' \
-      "$status_file")
-    reason=$(awk -F= '$1 == "reason" {sub(/^[^=]*=/, ""); print; exit}' \
-      "$status_file")
-    if [[ $sender_pid =~ ^[1-9][0-9]*$ ]] &&
-      kill -0 "$sender_pid" 2>/dev/null; then
-      alive=yes
-    fi
-  fi
-  printf 'nodes-live: pending notice: %s\n' "$pending_notice" >&2
-  printf 'nodes-live: sender_alive=%s state=%s last_input=%s\n' \
-    "$alive" "$state" "$last_input" >&2
-  printf 'nodes-live: sender reason: %s\n' "$reason" >&2
-}
-
 cat >"$tmp/crew-fake" <<'FAKE'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -95,7 +60,6 @@ printf 'role=%s\n' "${CREW_ROLE:-}"
 printf 'task=%s\n' "${CREW_TASK:-}"
 printf 'live report\n' >"${CREW_LIVE_REPORT:?}"
 crew-nodes notify done "$CREW_LIVE_REPORT"
-printf 'parent=%s\n' "${CREW_PARENT:-}"
 printf 'READY\n'
 while :; do
   printf '❯ '
@@ -111,14 +75,15 @@ chmod +x "$tmp/crew-fake"
 cat >"$tmp/parent.sh" <<'PARENT'
 #!/usr/bin/env bash
 set -euo pipefail
-while IFS= read -e -r -p '❯ ' line; do
-  printf 'PARENT_NOTICE=%s\n' "$line"
+while :; do
+  printf '❯ '
+  IFS= read -r line || exit 0
+  printf 'PARENT_INPUT=%s\n' "$line"
 done
 PARENT
 chmod +x "$tmp/parent.sh"
 
 export CREW_LIVE_MARKER=crew-live-marker
-export KITTY_LISTEN_ON=$listen_on
 kitty --config NONE -o allow_remote_control=socket-only \
   --listen-on "$listen_on" --start-as=hidden --directory "$tmp" \
   "$tmp/parent.sh" >"$tmp/kitty.log" 2>&1 &
@@ -145,9 +110,10 @@ parent_id=$(jq -r '.[0].tabs[0].windows[0].id // empty' "$tmp/ls.json")
   printf 'nodes-live: hidden Kitty has no initial window.\n' >&2
   exit 1
 }
-
 export KITTY_WINDOW_ID=$parent_id
-export CREW_BIN=$tmp/crew-fake
+kitten @ --to "$listen_on" set-user-vars --match "id:$parent_id" \
+  "crew_session=$parent_session" crew_cli=pi crew_native=1
+
 parent_ready=0
 for _ in {1..50}; do
   parent_transcript=$(kitten @ --to "$listen_on" get-text \
@@ -169,146 +135,98 @@ sleep 0.2
 parent_transcript=$(kitten @ --to "$listen_on" get-text \
   --match "id:$parent_id" --ansi)
 grep -Fq "$human_input" <<<"$parent_transcript" || {
-  printf 'nodes-live: parent did not retain the typed input.\n' >&2
+  printf 'nodes-live: parent did not retain the synthetic draft.\n' >&2
   exit 1
 }
 
-node_id=$(bash "$helper" spawn --name live-test --cli claude \
+export CREW_BIN=$tmp/crew-fake
+export CREW_TASK=live-test
+node_id=$(crew-nodes spawn --name live-test --cli claude \
   --cwd "$tmp" --task live-test)
 [[ $node_id =~ ^[1-9][0-9]*$ ]] || {
   printf 'nodes-live: spawn did not return a window ID.\n' >&2
   exit 1
 }
-sender_ready=0
-for _ in {1..150}; do
-  find_pending_notice || true
-  if [[ -n $pending_notice && -f $pending_notice.status ]] &&
-    grep -Fq 'state=running' "$pending_notice.status"; then
-    sender_ready=1
-    break
-  fi
-  sleep 0.1
-done
-if [[ $sender_ready != 1 ]]; then
-  report_notice_state
-  printf 'nodes-live: background sender did not start.\n' >&2
-  exit 1
-fi
 
 worker_ready=0
-for _ in {1..50}; do
-  transcript=$(bash "$helper" read "$node_id" screen)
+for _ in {1..100}; do
+  transcript=$(crew-nodes read "$node_id" screen)
   if grep -Fq 'READY' <<<"$transcript"; then
     worker_ready=1
     break
   fi
   sleep 0.1
 done
-if [[ $worker_ready != 1 ]]; then
-  report_notice_state
-  printf 'nodes-live: worker did not resume after notify.\n' >&2
-  exit 1
-fi
-if ! grep -Fq 'last_input=busy' "$pending_notice.status"; then
-  report_notice_state
-  printf 'nodes-live: sender did not record occupied input.\n' >&2
-  exit 1
-fi
-
-parent_transcript=$(bash "$helper" read "$parent_id" screen)
-grep -Fq "$human_input" <<<"$parent_transcript" || {
-  report_notice_state
-  printf 'nodes-live: human input disappeared while sender waited.\n' >&2
+[[ $worker_ready == 1 ]] || {
+  printf 'nodes-live: fake worker did not become ready.\n' >&2
   exit 1
 }
-if grep -Fq 'PARENT_NOTICE=' <<<"$parent_transcript"; then
-  report_notice_state
-  printf 'nodes-live: notice arrived before input was cleared.\n' >&2
-  exit 1
-fi
 
-printf 'ping' | bash "$helper" send "$node_id" --enter
-transcript=$(bash "$helper" read "$node_id" screen)
+parent_inbox=$CREW_HOME/mailboxes/$parent_session
+pending_file=''
+for _ in {1..100}; do
+  for candidate in "$parent_inbox"/pending/*.json; do
+    [[ -f $candidate ]] || continue
+    pending_file=$candidate
+    break
+  done
+  [[ -n $pending_file ]] && break
+  sleep 0.1
+done
+[[ -n $pending_file ]] || {
+  printf 'nodes-live: native notice was not stored in the parent inbox.\n' >&2
+  exit 1
+}
+message=$(jq -c . "$pending_file")
+message_id=$(jq -r .id <<<"$message")
+expected_notice="live-test/live-test: done. Report: $CREW_LIVE_REPORT. Metrics: metrics unavailable"
+[[ $(jq -r .text <<<"$message") == "$expected_notice" ]] || {
+  printf 'nodes-live: stored notice text was unexpected.\n' >&2
+  exit 1
+}
+[[ $(jq -r 'keys | sort | join(",")' <<<"$message") == "from,id,text" ]] || {
+  printf 'nodes-live: message envelope has unexpected fields.\n' >&2
+  exit 1
+}
+parent_transcript=$(kitten @ --to "$listen_on" get-text \
+  --match "id:$parent_id" --ansi)
+grep -Fq "$human_input" <<<"$parent_transcript" || {
+  printf 'nodes-live: native notice changed the parent draft.\n' >&2
+  exit 1
+}
+! grep -Fq 'PARENT_INPUT=' <<<"$parent_transcript" || {
+  printf 'nodes-live: native notice submitted the parent draft.\n' >&2
+  exit 1
+}
+
+# The controller stands in for the parent agent: it claims, reads, and acks.
+claimed=$(crew-nodes _mailbox claim)
+[[ $(jq -r .id <<<"$claimed") == "$message_id" ]] || {
+  printf 'nodes-live: parent claimed the wrong message.\n' >&2
+  exit 1
+}
+crew-nodes ack "$message_id" >/dev/null
+[[ -f $parent_inbox/received/$message_id.json &&
+  ! -e $parent_inbox/pending/$message_id.json ]] || {
+  printf 'nodes-live: explicit ack did not move the notice to received.\n' >&2
+  exit 1
+}
+
+printf 'ping' | crew-nodes type "$node_id" --enter
+transcript=$(crew-nodes read "$node_id" all)
 for expected in \
   "marker=$CREW_LIVE_MARKER" \
   'role=worker' \
   'task=live-test' \
-  "parent=$parent_id" \
   'pong'; do
-  if ! grep -Fq "$expected" <<<"$transcript"; then
-    report_notice_state
-    printf 'nodes-live: missing worker output: %s\n' "$expected" >&2
+  grep -Fq "$expected" <<<"$transcript" || {
+    printf 'nodes-live: missing fake worker output: %s\n' "$expected" >&2
     exit 1
-  fi
+  }
 done
-bash "$helper" close "$node_id"
-worker_id=$node_id
-node_id=''
-worker_closed=0
-for _ in {1..50}; do
-  if ! bash "$helper" list | jq -e --arg id "$worker_id" \
-    'select((.id | tostring) == $id)' >/dev/null; then
-    worker_closed=1
-    break
-  fi
-  sleep 0.1
-done
-if [[ $worker_closed != 1 ]]; then
-  node_id=$worker_id
-  report_notice_state
-  printf 'nodes-live: worker window did not close.\n' >&2
-  exit 1
-fi
-sender_pid=$(awk -F= '$1 == "pid" {print $2; exit}' \
-  "$pending_notice.status")
-if [[ ! $sender_pid =~ ^[1-9][0-9]*$ ]] ||
-  ! kill -0 "$sender_pid" 2>/dev/null; then
-  report_notice_state
-  printf 'nodes-live: sender did not survive worker close.\n' >&2
-  exit 1
-fi
 
-parent_transcript=$(bash "$helper" read "$parent_id" screen)
-grep -Fq "$human_input" <<<"$parent_transcript" || {
-  report_notice_state
-  printf 'nodes-live: closing worker cleared parent input.\n' >&2
-  exit 1
-}
-if grep -Fq 'PARENT_NOTICE=' <<<"$parent_transcript"; then
-  report_notice_state
-  printf 'nodes-live: notice arrived before input was cleared.\n' >&2
-  exit 1
-fi
-kitten @ --to "$listen_on" send-key --match "id:$parent_id" ctrl+a ctrl+k
-parent_transcript=$(kitten @ --to "$listen_on" get-text \
-  --match "id:$parent_id" --ansi)
-if grep -Fq "$human_input" <<<"$parent_transcript"; then
-  report_notice_state
-  printf 'nodes-live: parent input did not clear.\n' >&2
-  exit 1
-fi
-
-expected_notice="live-test/live-test: done. Report: $CREW_LIVE_REPORT."
-expected_notice+=" Metrics: "
-notice_ready=0
-for _ in {1..100}; do
-  parent_transcript=$(bash "$helper" read "$parent_id" screen)
-  if grep -Fq "PARENT_NOTICE=$expected_notice" <<<"$parent_transcript"; then
-    notice_ready=1
-    break
-  fi
-  sleep 0.1
-done
-if [[ $notice_ready != 1 ]]; then
-  report_notice_state
-  printf '%s\n' \
-    'nodes-live: parent did not receive notice after input cleared.' >&2
-  exit 1
-fi
-[[ ! -e $pending_notice && ! -e $pending_notice.status ]] || {
-  report_notice_state
-  printf 'nodes-live: delivered notice files remain pending.\n' >&2
-  exit 1
-}
+bash -n "$helper"
 printf '%s\n' \
-  'nodes-live: background sender survived worker close and delivered.'
+  'nodes-live: native notice stored and explicitly acknowledged.' \
+  'nodes-live: native notice preserved the parent editor draft.' \
+  'nodes-live: explicit type command still sends terminal input.'
