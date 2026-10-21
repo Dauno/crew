@@ -74,6 +74,7 @@ session before messaging again.
 - `implement`: make and verify requested code changes.
 - `review`: inspect changes and report concrete findings.
 - `git`: commit and deliver approved changes.
+- `handoff`: transfer work to a fresh agent near the context limit.
 
 ## Session details
 
