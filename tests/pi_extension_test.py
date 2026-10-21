@@ -53,6 +53,9 @@ class PiExtensionLifecycleTest(unittest.TestCase):
                 message_id = mailbox.publish_message(
                     RECIPIENT, "only deliver once idle", home=home,
                 )
+                confirmed_message_id = mailbox.publish_message(
+                    RECIPIENT, "confirm while busy", home=home,
+                )
 
             env = os.environ.copy()
             env.update({
@@ -65,6 +68,7 @@ class PiExtensionLifecycleTest(unittest.TestCase):
                     ROOT / "skills/nodes/extensions/crew-messages.ts"
                 ),
                 "CREW_EXPECTED_MESSAGE_ID": message_id,
+                "CREW_CONFIRMED_MESSAGE_ID": confirmed_message_id,
                 "PATH": (
                     str(tools) + os.pathsep + str(ROOT / "bin")
                     + os.pathsep + os.environ["PATH"]
@@ -72,22 +76,32 @@ class PiExtensionLifecycleTest(unittest.TestCase):
             })
             script = r'''import { readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { execFileSync } from "node:child_process";
 const { default: extension } = await import(
   pathToFileURL(process.env.CREW_EXTENSION_PATH).href
 );
 const handlers = {};
 const sent = [];
+let failNextSend = true;
 let compacting = true;
 let streaming = false;
+let otherBusy = false;
 const pi = {
   on: (event, handler) => { handlers[event] = handler; },
-  sendMessage: (message, delivery) => { sent.push({ message, delivery }); },
+  sendMessage: (message, delivery) => {
+    if (failNextSend) {
+      failNextSend = false;
+      throw new Error("simulated send failure");
+    }
+    sent.push({ message, delivery });
+  },
 };
 extension(pi);
-const context = { isIdle: () => !streaming && !compacting };
+const context = { isIdle: () => !streaming && !compacting && !otherBusy };
 const delay = (milliseconds) => new Promise((resolve) =>
   setTimeout(resolve, milliseconds));
 await handlers.session_start({}, context);
+await handlers.session_before_compact();
 let marker;
 for (let attempt = 0; attempt < 40; attempt++) {
   try {
@@ -108,18 +122,58 @@ if (marker.id !== process.env.CREW_EXPECTED_MESSAGE_ID) {
 await delay(750);
 if (sent.length !== 0) throw new Error("compaction delivered a claimed message");
 compacting = false;
+otherBusy = true;
+await handlers.session_compact_failed();
+await delay(650);
+if (sent.length !== 0) throw new Error("busy non-run state dispatched a message");
+otherBusy = false;
+streaming = true;
+await handlers.agent_start();
 for (let attempt = 0; attempt < 40 && sent.length === 0; attempt++) {
   await delay(125);
 }
-if (sent.length !== 1) throw new Error("idle extension did not dispatch its claim");
-if (sent[0].delivery.triggerTurn !== true || sent[0].delivery.deliverAs) {
-  throw new Error("idle delivery did not trigger a turn conservatively");
+if (sent.length !== 1 || sent[0].delivery.deliverAs !== "steer" ||
+    sent[0].delivery.triggerTurn !== true) {
+  throw new Error("busy extension did not steer its claimed message");
 }
+await delay(900);
+if (sent.length !== 1) throw new Error("busy extension duplicated a queued steer");
+await handlers.message_end({ message: {
+  role: "custom", customType: "crew-message", details: { id: "not-the-claim" },
+} });
 if (!sent[0].message.content.includes(process.env.CREW_EXPECTED_MESSAGE_ID)) {
   throw new Error("dispatched message lost its acknowledgement ID");
 }
+
+// An aborted, unconsumed steer is retried on idle.
+streaming = false;
+await handlers.agent_settled();
+for (let attempt = 0; attempt < 20 && sent.length < 2; attempt++) await delay(125);
+if (sent.length !== 2 || sent[1].delivery.triggerTurn !== true ||
+    sent[1].delivery.deliverAs) {
+  throw new Error("unconsumed steer was not retried on idle");
+}
+const claimed = sent[1].message;
+await handlers.message_end({ message: {
+  role: "custom", customType: "crew-message", details: claimed.details,
+} });
+execFileSync("crew-nodes", ["ack", process.env.CREW_EXPECTED_MESSAGE_ID]);
+streaming = true;
+await handlers.agent_start();
+for (let attempt = 0; attempt < 40 && sent.length < 3; attempt++) await delay(125);
+if (sent.length !== 3 || sent[2].delivery.deliverAs !== "steer") {
+  throw new Error("second busy message was not steered");
+}
+await handlers.message_end({ message: {
+  role: "custom", customType: "crew-message",
+  details: { id: process.env.CREW_CONFIRMED_MESSAGE_ID },
+} });
+streaming = false;
+await handlers.agent_settled();
+await delay(800);
+if (sent.length !== 3) throw new Error("confirmed steer was resent");
 await handlers.session_shutdown();
-console.log("PASS Pi compaction claim remains held until idle");
+console.log("PASS Pi compaction, steer confirmation, and idle fallback");
 '''
             result = subprocess.run(
                 [shutil.which("node"), "--experimental-strip-types",
@@ -132,8 +186,8 @@ console.log("PASS Pi compaction claim remains held until idle");
                 check=False,
             )
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("PASS Pi compaction claim remains held until idle", result.stdout)
-            self.assertTrue((receiver / "pending" / f"{message_id}.json").is_file())
+            self.assertIn("PASS Pi compaction, steer confirmation, and idle fallback", result.stdout)
+            self.assertTrue((receiver / "received" / f"{message_id}.json").is_file())
             self.assertTrue((receiver / ".delivery.json").is_file())
 
 
