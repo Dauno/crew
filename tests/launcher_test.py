@@ -829,6 +829,10 @@ else:
             args[1:3],
             ["-o", "allow_remote_control=socket-only"],
         )
+        self.assertEqual(
+            args[3:5],
+            ["-o", "macos_quit_when_last_window_closed=yes"],
+        )
         listen = args[args.index("--listen-on") + 1]
         self.assertTrue(listen.startswith(f"unix:{self.tmp}/crew-"), listen)
         self.assertTrue(listen.endswith(".sock"), listen)
@@ -848,6 +852,10 @@ else:
         self.assertEqual(result.returncode, 0)
         record = json.loads((self.root / "kitty-capture.json").read_text())
         self.assertIn(str(LAUNCHER), record["args"])
+        option_index = record["args"].index(
+            "macos_quit_when_last_window_closed=yes"
+        )
+        self.assertEqual(record["args"][option_index - 1], "-o")
         self.assertEqual(record["args"][-2:], ["codex", "exec"])
 
     def test_invalid_cli_prints_help_and_exits_two(self):
