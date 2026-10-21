@@ -137,7 +137,18 @@ native_target_session() {
       die "could not verify Codex routing for Kitty window $id."
     [[ -n $state ]] || die "Codex native receiver is not ready for Kitty window $id."
     if jq -e '.stale == true' >/dev/null <<<"$state"; then
-      die "Codex conversation changed; restart the crew session before messaging."
+      local reason
+      reason=$(jq -r '
+        .reason
+        | if type == "string" then
+            gsub("[\u0000-\u001f\u007f]+"; " ")
+          else
+            empty
+          end
+      ' <<<"$state")
+      [[ -n $reason ]] || reason="unknown reason"
+      die "Codex messaging is stale ($reason); restart the crew session" \
+        "before messaging."
     fi
   fi
   printf '%s\n' "$session_id"

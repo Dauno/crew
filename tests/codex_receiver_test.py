@@ -47,10 +47,11 @@ NEW_THREAD = "01a15a98-9bd3-7fc3-be87-295e00d6b7af"
 
 
 class FakeProxy:
-    def __init__(self, loaded_roots=None):
+    def __init__(self, loaded_roots=None, thread_metadata=None):
         self.events = queue.Queue()
         self.requests = []
-        self.loaded_roots = loaded_roots or [ROOT_THREAD]
+        self.loaded_roots = [ROOT_THREAD] if loaded_roots is None else loaded_roots
+        self.thread_metadata = thread_metadata or {}
 
     def pump_events(self):
         return None
@@ -60,15 +61,28 @@ class FakeProxy:
         if method == "thread/loaded/list":
             return {"data": self.loaded_roots}
         if method == "thread/read":
-            return {"thread": {
+            thread = {
                 "id": params["threadId"],
                 "parentThreadId": None,
+                "source": "cli",
+                "ephemeral": False,
                 "cwd": "/tmp/project",
-            }}
+            }
+            thread.update(self.thread_metadata.get(params["threadId"], {}))
+            return {"thread": thread}
         raise AssertionError(f"unexpected request: {method}")
 
 
 class CodexReceiverTest(unittest.TestCase):
+    def logged_record(self, prefix):
+        line = next(
+            line for line in (
+                self.inbox / "codex-receiver.log"
+            ).read_text().splitlines()
+            if line.startswith(prefix)
+        )
+        return line, json.loads(line.split(": ", 1)[1])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -88,13 +102,17 @@ class CodexReceiverTest(unittest.TestCase):
             "CREW_CLI": "codex",
         })
 
-    def receiver(self, thread_id=ROOT_THREAD, stale=False, loaded_roots=None):
+    def receiver(
+        self, thread_id=ROOT_THREAD, stale=False, loaded_roots=None,
+        thread_metadata=None,
+    ):
         result = codex_receiver.CodexReceiver.__new__(codex_receiver.CodexReceiver)
         result.socket_path = str(self.root / "app.sock")
         result.session_id = RECIPIENT
         result.thread_id = thread_id
         result.stale = stale
-        result.proxy = FakeProxy(loaded_roots)
+        result.logged_ignored_thread_ids = set()
+        result.proxy = FakeProxy(loaded_roots, thread_metadata)
         return result
 
     def publish(self, text):
@@ -221,7 +239,10 @@ class CodexReceiverTest(unittest.TestCase):
                 "params": {"thread": {
                     "id": NEW_THREAD,
                     "parentThreadId": None,
-                    "cwd": "/tmp/project",
+                    "source": "vscode",
+                    "ephemeral": False,
+                    "forkedFromId": "parent-thread",
+                    "preview": "private preview must not be logged",
                 }},
             })
             receiver.process_events()
@@ -229,6 +250,174 @@ class CodexReceiverTest(unittest.TestCase):
             state = mailbox.codex_state(home=self.home, session_id=RECIPIENT)
             self.assertTrue(state["stale"])
             self.assertEqual(state["thread_id"], ROOT_THREAD)
+            invalidation, metadata = self.logged_record(
+                "thread caused root invalidation: ",
+            )
+            self.assertEqual(set(metadata), {
+                "id", "source", "ephemeral", "forkedFromId", "parentThreadId",
+            })
+            self.assertEqual(metadata["id"], NEW_THREAD)
+            self.assertEqual(metadata["source"], "vscode")
+            self.assertFalse(metadata["ephemeral"])
+            self.assertEqual(metadata["forkedFromId"], "parent-thread")
+            self.assertNotIn("preview", invalidation)
+            self.assertNotIn("private preview", invalidation)
+
+    def test_subagent_and_ephemeral_events_do_not_invalidate(self):
+        sources = (
+            {"subAgent": "compact"},
+            {"subAgent": "memory_consolidation"},
+            {"subAgent": {"other": "background task"}},
+            {"subAgent": {"thread_spawn": {
+                "agent_path": "/private/path/agent",
+                "agent_nickname": "private name",
+                "agent_role": "private role",
+            }}},
+        )
+        cases = [(source, False) for source in sources]
+        cases.extend((("cli", True), ("vscode", True)))
+        for index, (source, ephemeral) in enumerate(cases):
+            with self.subTest(source=source, ephemeral=ephemeral):
+                (self.inbox / "codex-receiver.log").write_text("")
+                with mock.patch.dict(os.environ, self.env):
+                    receiver = self.receiver()
+                    receiver.proxy.events.put({
+                        "method": "thread/started",
+                        "params": {"thread": {
+                            "id": f"thread-{index}",
+                            "parentThreadId": None,
+                            "source": source,
+                            "ephemeral": ephemeral,
+                            "threadSource": "synthetic",
+                            "forkedFromId": "parent-thread",
+                            "preview": "private preview must not be logged",
+                        }},
+                    })
+                    receiver.process_events()
+                    self.assertFalse(receiver.stale)
+                    ignored, metadata = self.logged_record(
+                        "ignored non-root thread: ",
+                    )
+                    self.assertEqual(set(metadata), {
+                        "id", "source", "ephemeral", "forkedFromId", "parentThreadId",
+                    })
+                    self.assertEqual(metadata["id"], f"thread-{index}")
+                    self.assertNotIn("preview", ignored)
+                    self.assertNotIn("private preview", ignored)
+                    self.assertNotIn("background task", ignored)
+                    self.assertNotIn("agent_path", ignored)
+                    self.assertNotIn("/private/path", ignored)
+                    self.assertNotIn("private name", ignored)
+                    self.assertNotIn("private role", ignored)
+
+    def test_thread_log_redacts_free_text_and_bounds_ids(self):
+        with mock.patch.dict(os.environ, self.env):
+            receiver = self.receiver()
+            receiver.log_thread("metadata", {
+                "id": "/private/path" * 100,
+                "source": {"custom": "private custom source"},
+                "ephemeral": "private ephemeral text",
+                "forkedFromId": "long-id-" * 100,
+                "parentThreadId": "parent-123",
+            })
+            line, metadata = self.logged_record("metadata: ")
+            self.assertEqual(metadata["id"], "present")
+            self.assertEqual(metadata["source"], "custom")
+            self.assertEqual(metadata["ephemeral"], "present")
+            self.assertEqual(metadata["forkedFromId"], "present")
+            self.assertEqual(metadata["parentThreadId"], "parent-123")
+            self.assertNotIn("private", line)
+            self.assertNotIn("/private", line)
+            self.assertLess(len(line), 300)
+
+    def test_incomplete_event_fails_closed_without_thread_read(self):
+        with mock.patch.dict(os.environ, self.env):
+            receiver = self.receiver()
+            receiver.proxy.events.put({
+                "method": "thread/started",
+                "params": {"thread": {
+                    "id": NEW_THREAD,
+                    "parentThreadId": None,
+                }},
+            })
+            receiver.process_events()
+            self.assertTrue(receiver.stale)
+            self.assertFalse(
+                any(method == "thread/read" for method, _ in receiver.proxy.requests)
+            )
+            self.assertEqual(
+                len((self.inbox / "codex-receiver.log").read_text().splitlines()),
+                2,
+            )
+
+    def test_repeated_anchored_root_events_do_not_log_metadata(self):
+        with mock.patch.dict(os.environ, self.env):
+            receiver = self.receiver()
+            event = {
+                "method": "thread/started",
+                "params": {"thread": {
+                    "id": ROOT_THREAD,
+                    "parentThreadId": None,
+                    "source": "vscode",
+                    "ephemeral": False,
+                }},
+            }
+            receiver.proxy.events.put(event)
+            receiver.proxy.events.put(event)
+            receiver.process_events()
+            self.assertFalse(receiver.stale)
+            self.assertFalse((self.inbox / "codex-receiver.log").exists())
+
+    def test_loaded_root_ids_exclude_subagents_and_ephemeral_threads(self):
+        ids = [
+            ROOT_THREAD, "loaded-compact", "loaded-memory", "loaded-other",
+            "loaded-ephemeral",
+        ]
+        metadata = {
+            "loaded-compact": {"source": {"subAgent": "compact"}},
+            "loaded-memory": {"source": {"subAgent": "memory_consolidation"}},
+            "loaded-other": {"source": {"subAgent": {"other": "background task"}}},
+            "loaded-ephemeral": {"ephemeral": True},
+        }
+        with mock.patch.dict(os.environ, self.env):
+            receiver = self.receiver(
+                loaded_roots=ids, thread_metadata=metadata,
+            )
+            self.assertEqual(
+                [thread_id for thread_id, _ in receiver.root_ids()], [ROOT_THREAD],
+            )
+            lines = (self.inbox / "codex-receiver.log").read_text().splitlines()
+            ignored = [
+                line for line in lines
+                if line.startswith("ignored non-root thread: ")
+            ]
+            self.assertEqual(len(ignored), 4)
+            self.assertTrue(all("preview" not in line for line in ignored))
+            receiver.root_ids()
+            lines = (self.inbox / "codex-receiver.log").read_text().splitlines()
+            self.assertEqual(
+                len([line for line in lines
+                     if line.startswith("ignored non-root thread: ")]),
+                4,
+            )
+
+    def test_multiple_loaded_roots_log_metadata_before_invalidation(self):
+        with mock.patch.dict(os.environ, self.env):
+            receiver = self.receiver(
+                thread_id=None, loaded_roots=[ROOT_THREAD, NEW_THREAD],
+            )
+            receiver.discover_root()
+            self.assertTrue(receiver.stale)
+            lines = (self.inbox / "codex-receiver.log").read_text().splitlines()
+            roots = [
+                line for line in lines
+                if line.startswith("multiple loaded root thread: ")
+            ]
+            self.assertEqual(len(roots), 2)
+            self.assertEqual(
+                {json.loads(line.split(": ", 1)[1])["id"] for line in roots},
+                {ROOT_THREAD, NEW_THREAD},
+            )
 
     def test_child_thread_does_not_invalidate_root_route(self):
         with mock.patch.dict(os.environ, self.env):
@@ -238,6 +427,8 @@ class CodexReceiverTest(unittest.TestCase):
                 "params": {"thread": {
                     "id": NEW_THREAD,
                     "parentThreadId": ROOT_THREAD,
+                    "source": "cli",
+                    "ephemeral": False,
                 }},
             })
             receiver.process_events()
@@ -299,6 +490,27 @@ class CodexReceiverTest(unittest.TestCase):
         run.assert_not_called()
         self.assertTrue(receiver.stale)
         self.assertTrue((self.inbox / "pending" / f"{message_id}.json").exists())
+        lines = (self.inbox / "codex-receiver.log").read_text().splitlines()
+        changed = next(
+            line for line in lines
+            if line.startswith("root changed before queued delivery: ")
+        )
+        self.assertEqual(
+            json.loads(changed.split(": ", 1)[1])["id"], ROOT_THREAD,
+        )
+
+    def test_missing_loaded_root_logs_anchor_and_fails_closed(self):
+        message_id = self.publish("loaded root disappeared")
+        receiver = self.receiver(thread_id=ROOT_THREAD, loaded_roots=[])
+        with mock.patch.dict(os.environ, self.env), mock.patch.object(
+            codex_receiver.subprocess, "run",
+        ) as run:
+            receiver.dispatch_one()
+        run.assert_not_called()
+        self.assertTrue(receiver.stale)
+        self.assertTrue((self.inbox / "pending" / f"{message_id}.json").exists())
+        _, metadata = self.logged_record("root changed before queued delivery: ")
+        self.assertEqual(metadata["id"], ROOT_THREAD)
 
     def test_stale_root_never_queues_pending_message(self):
         message_id = self.publish("stale destination")
