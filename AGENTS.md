@@ -257,6 +257,8 @@ A statement by a model is not evidence.
 ## Rules
 
 - Do not commit, push or create remotes unless the coordinator asks.
+- Commit with the repository's configured Git identity. Never pass or set
+  `user.name` or `user.email`.
 - Stage your new files with `git add`; flakes ignore untracked files.
 - Never put secrets, work data or real memory in the repository. It is
   public, and Git history keeps every commit.
