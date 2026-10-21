@@ -202,7 +202,8 @@ A notice is one line:
 
 crew uses `kitten @` through `$KITTY_LISTEN_ON` only.
 Outside a remote-controllable Kitty, the launcher opens a new Kitty.
-It passes `-o allow_remote_control=socket-only` and a unique `--listen-on`
+It passes `-o allow_remote_control=socket-only`,
+`-o macos_quit_when_last_window_closed=yes` and a unique `--listen-on`
 socket under `${TMPDIR:-/tmp}`.
 crew never edits `kitty.conf` or CLI settings and authentication under
 `~/.claude` or `~/.codex`. The CLIs manage their own native logs. Crew-owned
