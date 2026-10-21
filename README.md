@@ -147,10 +147,11 @@ jq -s '
 
 ## Skills
 
-The `plan`, `implement` and `review` skills guide task planning, code changes
-and reviews. The `nodes`, `memory` and `onboard` skills support collaboration
-and repository work. The plan, implement and review skills draw on
-[ponytail](https://github.com/DietrichGebert/ponytail) (MIT).
+The `plan`, `implement`, `review` and `git` skills guide planning, changes,
+reviews and delivery. The `nodes`, `memory` and `onboard` skills support
+collaboration and repository work. The role skills draw on
+[ponytail](https://github.com/DietrichGebert/ponytail) and
+[mattpocock/skills](https://github.com/mattpocock/skills), both MIT.
 
 ## Develop
 
