@@ -59,9 +59,12 @@ interrupts and closes to its own window.
 atomically. Messages allow up to 8 KiB of UTF-8 text. For longer reports,
 write a file and send its path. The receiver presents the message ID and
 sender to the agent.
-After reading the message, the agent runs `crew-nodes ack MESSAGE_ID`.
+After reading the message, run `crew-nodes ack MESSAGE_ID` before acting.
 Only that explicit command marks it received. It does not mean task
 completion.
+Acknowledge only a `CREW_MESSAGE_ID` delivered by the CLI. Never read or list
+`$CREW_INBOX` files directly. To wait for a reply, end the turn. Do not poll
+with sleep loops; the receiver delivers messages when they arrive.
 
 `ack` validates the current `CREW_SESSION_ID` and accepts only the current
 session's dispatched message. Repeating an acknowledgement is harmless.

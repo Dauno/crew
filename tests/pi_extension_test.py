@@ -221,6 +221,24 @@ if (sent[0].delivery.deliverAs) {
 await handlers.session_shutdown();
 ''')
 
+    def test_out_of_band_ack_drops_held_message_and_claims_next(self):
+        runtime = self.runtime(count=2)
+        self.run_script(runtime, r'''const [firstId, secondId] = JSON.parse(process.env.CREW_MESSAGE_IDS);
+otherBusy = true;
+await waitForClaim();
+await delay(150);
+execFileSync("crew-nodes", ["ack", firstId]);
+otherBusy = false;
+await waitFor(() => sent.length === 1, "next message was not dispatched");
+if (!sent[0].message.content.includes(secondId)) {
+  throw new Error("wrong message dispatched");
+}
+if (sent[0].message.content.includes(firstId)) {
+  throw new Error("held acknowledged message was reinjected");
+}
+await handlers.session_shutdown();
+''')
+
     def test_ack_allows_next_claim_to_progress(self):
         runtime = self.runtime(count=2)
         first_id, second_id = runtime["ids"]

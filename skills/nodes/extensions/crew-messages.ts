@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
 interface CrewMessage {
@@ -54,9 +56,16 @@ export default function (pi: ExtensionAPI) {
   const poll = () => {
     if (stopped || polling || !context) return;
     if (claimedMessage) {
-      dispatchClaimed();
-      schedule();
-      return;
+      const inbox = process.env.CREW_INBOX;
+      const received = inbox && join(inbox, "received", `${claimedMessage.id}.json`);
+      if (received && existsSync(received)) {
+        claimedMessage = undefined;
+        inFlightMessageId = undefined;
+      } else {
+        dispatchClaimed();
+        schedule();
+        return;
+      }
     }
     polling = true;
     execFile("crew-nodes", ["_mailbox", "claim"], {
