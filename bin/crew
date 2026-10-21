@@ -71,6 +71,7 @@ if [[ -z ${KITTY_LISTEN_ON:-} ]] || ! kitten @ ls >/dev/null 2>&1; then
   done
   kitty --detach \
     -o allow_remote_control=socket-only \
+    -o macos_quit_when_last_window_closed=yes \
     --listen-on "unix:$socket_path" \
     --directory "$PWD" \
     "$CREW_BIN" "$cli_name" "$@"
