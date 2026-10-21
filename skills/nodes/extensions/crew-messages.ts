@@ -28,7 +28,7 @@ export default function (pi: ExtensionAPI) {
     }, 500);
   };
 
-  const dispatchClaimed = async () => {
+  const dispatchClaimed = () => {
     if (stopped || !claimedMessage || !context) return;
     const message = claimedMessage;
     const busy = runActive;
@@ -84,8 +84,11 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("message_end", async (event) => {
     const message = event.message;
-    if (message.role === "custom" && message.customType === "crew-message" &&
-        message.details?.id === inFlightMessageId) {
+    if (message.role !== "custom" || message.customType !== "crew-message") return;
+    const details = message.details;
+    if (details && typeof details === "object" && "id" in details &&
+        typeof details.id === "string" && inFlightMessageId !== undefined &&
+        details.id === inFlightMessageId) {
       claimedMessage = undefined;
       inFlightMessageId = undefined;
     }
@@ -97,7 +100,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("agent_settled", async () => {
     runActive = false;
     compacting = false;
-    if (inFlightMessageId) inFlightMessageId = undefined;
+    inFlightMessageId = undefined;
     schedule();
   });
   pi.on("session_before_compact", async () => { compacting = true; });
