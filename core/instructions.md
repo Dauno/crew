@@ -73,6 +73,7 @@ session before messaging again.
 - `plan`: verify requests and agree on scope before implementation.
 - `implement`: make and verify requested code changes.
 - `review`: inspect changes and report concrete findings.
+- `git`: commit and deliver approved changes.
 
 ## Session details
 

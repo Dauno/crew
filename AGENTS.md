@@ -24,6 +24,7 @@ readable, so commit nothing private.
 - `skills/plan/`: verify requests and agree on scope before implementation.
 - `skills/implement/`: make and verify requested code changes.
 - `skills/review/`: inspect changes and report concrete findings.
+- `skills/git/`: commit and deliver approved changes.
 - `skills/memory/`: how to read and record decisions and lessons.
 - `skills/onboard/`: how to learn a repository on the first visit.
 - `tests/`: unit tests that `nix flake check` runs.
