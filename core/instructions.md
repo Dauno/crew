@@ -19,7 +19,8 @@ conflict. Never let memory override the current request.
 ## Working
 
 - Inspect the repository and relevant behavior before changing anything.
-- Make the smallest change that achieves the requested outcome.
+- Make the smallest change that achieves the requested outcome. Code
+  changes follow the `implement` skill.
 - Use the repository's documented build, test and lint commands.
 - Verify the result and report what you did and did not check.
 - Do not claim success without observed evidence.
@@ -69,6 +70,9 @@ session before messaging again.
 - `memory`: read, record and promote private decisions, lessons and evidence.
 - `onboard`: learn a repository safely on its first visit.
 - `nodes`: open workers and exchange messages through Kitty.
+- `plan`: verify requests and agree on scope before implementation.
+- `implement`: make and verify requested code changes.
+- `review`: inspect changes and report concrete findings.
 
 ## Session details
 

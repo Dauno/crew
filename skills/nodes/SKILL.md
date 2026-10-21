@@ -104,8 +104,9 @@ crew-nodes read 456 screen
 
 ## Task context and reuse
 
-Keep each brief and report in `$CREW_RUNS/<task>/`. Use one-line notices in
-this format: `<task>/<node>: <status>. Report: <path>`. The coordinator writes
+Keep each brief and report in `$CREW_RUNS/<task>/`. A brief names the skill
+each role reads: `plan`, `implement` or `review`. Use one-line notices in this
+format: `<task>/<node>: <status>. Report: <path>`. The coordinator writes
 memory. Workers propose memory entries in their reports.
 
 Create a new node for every new task. For a continuation within the same task,

@@ -21,6 +21,9 @@ readable, so commit nothing private.
 - `claude/`: the Claude Code adapter, a plugin that carries the skills.
 - `skills/nodes/`: Kitty messaging between agents, with `scripts/nodes.sh`.
   The package installs it on the PATH as `crew-nodes`.
+- `skills/plan/`: verify requests and agree on scope before implementation.
+- `skills/implement/`: make and verify requested code changes.
+- `skills/review/`: inspect changes and report concrete findings.
 - `skills/memory/`: how to read and record decisions and lessons.
 - `skills/onboard/`: how to learn a repository on the first visit.
 - `tests/`: unit tests that `nix flake check` runs.
