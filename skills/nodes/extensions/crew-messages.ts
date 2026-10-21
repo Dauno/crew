@@ -13,6 +13,9 @@ const formatMessage = (message: CrewMessage) =>
 export default function (pi: ExtensionAPI) {
   let context: { isIdle(): boolean } | undefined;
   let stopped = true;
+  let compacting = false;
+  let runActive = false;
+  let inFlightMessageId: string | undefined;
   let polling = false;
   let claimedMessage: CrewMessage | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -26,17 +29,24 @@ export default function (pi: ExtensionAPI) {
   };
 
   const dispatchClaimed = () => {
-    if (stopped || !claimedMessage || !context?.isIdle()) return;
+    if (stopped || !claimedMessage || !context) return;
     const message = claimedMessage;
+    const busy = runActive;
+    if (compacting || (!busy && !context.isIdle())) return;
+    if (busy && inFlightMessageId) return;
     try {
+      if (busy) inFlightMessageId = message.id;
       pi.sendMessage({
         customType: "crew-message",
         content: formatMessage(message),
         display: true,
         details: { id: message.id, from: message.from },
-      }, { triggerTurn: true });
-      claimedMessage = undefined;
+      }, busy
+        ? { deliverAs: "steer", triggerTurn: true }
+        : { triggerTurn: true });
+      if (!busy) claimedMessage = undefined;
     } catch (error) {
+      if (busy) inFlightMessageId = undefined;
       console.error("crew Pi receiver could not dispatch a mailbox message", error);
     }
   };
@@ -72,16 +82,47 @@ export default function (pi: ExtensionAPI) {
     });
   };
 
+  pi.on("message_end", async (event) => {
+    const message = event.message;
+    if (message.role !== "custom" || message.customType !== "crew-message") return;
+    const details = message.details;
+    if (details && typeof details === "object" && "id" in details &&
+        typeof details.id === "string" && inFlightMessageId !== undefined &&
+        details.id === inFlightMessageId) {
+      claimedMessage = undefined;
+      inFlightMessageId = undefined;
+    }
+  });
+
+  pi.on("agent_start", async () => { runActive = true; });
+  // A queued steer may survive an unusual error exit and later duplicate fallback.
+  // At-least-once delivery prevents silent loss; acknowledgements are idempotent.
+  pi.on("agent_settled", async () => {
+    runActive = false;
+    compacting = false;
+    inFlightMessageId = undefined;
+    schedule();
+  });
+  pi.on("session_before_compact", async () => { compacting = true; });
+  pi.on("session_compact", async () => { compacting = false; });
+  pi.on("session_compact_failed", async () => { compacting = false; });
+
   pi.on("session_start", async (_event, ctx) => {
     if (timer) clearTimeout(timer);
     timer = undefined;
     context = ctx;
+    compacting = false;
+    runActive = false;
+    inFlightMessageId = undefined;
     stopped = false;
     schedule();
   });
 
   pi.on("session_shutdown", async () => {
     stopped = true;
+    compacting = false;
+    runActive = false;
+    inFlightMessageId = undefined;
     context = undefined;
     if (timer) clearTimeout(timer);
     timer = undefined;
