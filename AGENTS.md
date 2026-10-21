@@ -260,6 +260,8 @@ A statement by a model is not evidence.
 - Use generic examples in tests, docs and commit messages. Do not name
   employers, work repositories, internal hosts or private endpoints.
 - Do not edit other repositories.
+- Never signal or close a process you did not start. Track a child by the
+  PID your own command returned, never by a name search.
 
 ## Commits
 
