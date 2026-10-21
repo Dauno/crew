@@ -1075,7 +1075,40 @@ class NodesTest(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         result = self.run_helper("send", "8", input_text="message")
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Codex conversation changed", result.stderr)
+        self.assertEqual(
+            result.stderr,
+            "nodes: Codex messaging is stale (thread changed); restart the "
+            "crew session before messaging.\n",
+        )
+        self.assertEqual(len(result.stderr.splitlines()), 1)
+
+        result = self.run_helper(
+            "_mailbox", "codex-set", "--socket", "/tmp/fake.sock",
+            "--thread", "thread-a", "--stale", "yes",
+            "--reason", "line\n\ttwo", env=state_env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_helper("send", "8", input_text="message")
+        self.assertEqual(
+            result.stderr,
+            "nodes: Codex messaging is stale (line two); restart "
+            "the crew session before messaging.\n",
+        )
+        self.assertEqual(len(result.stderr.splitlines()), 1)
+
+        result = self.run_helper(
+            "_mailbox", "codex-set", "--socket", "/tmp/fake.sock",
+            "--thread", "thread-a", "--stale", "yes", "--reason", "",
+            env=state_env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_helper("send", "8", input_text="message")
+        self.assertEqual(
+            result.stderr,
+            "nodes: Codex messaging is stale (unknown reason); restart "
+            "the crew session before messaging.\n",
+        )
+        self.assertEqual(len(result.stderr.splitlines()), 1)
         self.assertFalse(
             list((self.crew_home / "mailboxes" / self.worker_session
                   / "pending").glob("*.json"))
