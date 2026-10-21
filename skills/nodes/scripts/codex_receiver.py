@@ -236,7 +236,6 @@ class CodexReceiver:
         self.thread_id: str | None = None
         self.stale = False
         self.logged_ignored_thread_ids: set[str] = set()
-        self.root_thread_metadata: dict[str, dict] = {}
         self.proxy = AppServerProxy(self.socket_path)
         try:
             self.write_state("")
@@ -282,18 +281,7 @@ class CodexReceiver:
         if not isinstance(source, dict):
             return "unknown"
         if "subAgent" in source:
-            subagent = source["subAgent"]
-            known = {"review", "compact", "memory_consolidation"}
-            if isinstance(subagent, str) and subagent in known:
-                return f"subAgent:{subagent}"
-            if isinstance(subagent, dict):
-                for variant in (
-                    "review", "compact", "memory_consolidation",
-                    "thread_spawn", "other",
-                ):
-                    if variant in subagent:
-                        return f"subAgent:{variant}"
-            return "subAgent:unknown"
+            return "subAgent"
         if "custom" in source:
             return "custom"
         return "unknown"
@@ -319,7 +307,6 @@ class CodexReceiver:
             "id": thread.get("id"),
             "source": cls.safe_source(thread.get("source")),
             "ephemeral": thread.get("ephemeral"),
-            "threadSource": "threadSource" in thread,
             "forkedFromId": thread.get("forkedFromId"),
             "parentThreadId": thread.get("parentThreadId"),
         }
@@ -340,20 +327,16 @@ class CodexReceiver:
         self.log(f"{action}: {encoded}")
 
     def log_ignored_thread(self, thread: dict, thread_id: str) -> None:
-        logged = getattr(self, "logged_ignored_thread_ids", set())
-        if thread_id in logged:
+        if thread_id in self.logged_ignored_thread_ids:
             return
-        logged.add(thread_id)
-        self.logged_ignored_thread_ids = logged
+        self.logged_ignored_thread_ids.add(thread_id)
         self.log_thread("ignored non-root thread", thread, thread_id)
 
-    def log_root_threads(self, thread_ids: list[str], action: str) -> None:
-        metadata_by_id = getattr(self, "root_thread_metadata", {})
-        for thread_id in thread_ids:
-            thread = metadata_by_id.get(thread_id, {"id": thread_id})
+    def log_root_threads(self, roots: list[tuple[str, dict]], action: str) -> None:
+        for thread_id, thread in roots:
             self.log_thread(action, thread, thread_id)
 
-    def read_thread(self, thread_id: str, thread: dict | None = None) -> dict:
+    def read_thread(self, thread_id: str) -> dict:
         response = self.proxy.request("thread/read", {
             "threadId": thread_id,
             "includeTurns": False,
@@ -364,33 +347,24 @@ class CodexReceiver:
         fetched_id = fetched.get("id")
         if fetched_id is not None and fetched_id != thread_id:
             raise ReceiverError("Codex thread metadata has a mismatched ID")
-        combined = dict(thread or {})
-        combined.update(fetched)
-        combined["id"] = thread_id
-        return combined
+        fetched["id"] = thread_id
+        return fetched
 
-    def root_ids(self) -> list[str]:
+    def root_ids(self) -> list[tuple[str, dict]]:
         response = self.proxy.request("thread/loaded/list", {"limit": 50})
         ids = response.get("data", [])
         if not isinstance(ids, list) or any(not isinstance(item, str) for item in ids):
             raise ReceiverError("Codex loaded thread list is invalid")
-        roots: list[str] = []
+        roots: list[tuple[str, dict]] = []
         for thread_id in ids:
             thread = self.read_thread(thread_id)
             if self.is_root_candidate(thread):
-                roots.append(thread_id)
-                metadata_by_id = getattr(self, "root_thread_metadata", {})
-                metadata_by_id[thread_id] = thread
-                self.root_thread_metadata = metadata_by_id
+                roots.append((thread_id, thread))
             else:
                 self.log_ignored_thread(thread, thread_id)
         return roots
 
-    def set_root(self, thread_id: str, thread: dict | None = None) -> None:
-        if thread is not None:
-            metadata_by_id = getattr(self, "root_thread_metadata", {})
-            metadata_by_id[thread_id] = thread
-            self.root_thread_metadata = metadata_by_id
+    def set_root(self, thread_id: str) -> None:
         if self.thread_id is None:
             self.thread_id = thread_id
             self.write_state("")
@@ -413,12 +387,10 @@ class CodexReceiver:
             return
         thread_id = thread.get("id")
         if "source" not in thread or "ephemeral" not in thread:
-            if isinstance(thread_id, str):
-                thread = self.read_thread(thread_id, thread)
-            elif thread.get("parentThreadId") is None:
+            if not self.stale:
                 self.log_thread("thread caused root invalidation", thread)
-                self.invalidate("Codex started a root thread without an ID")
-                return
+            self.invalidate("Codex started an incomplete root thread event")
+            return
         if not self.is_root_candidate(thread):
             if isinstance(thread_id, str):
                 self.log_ignored_thread(thread, thread_id)
@@ -435,7 +407,7 @@ class CodexReceiver:
             and not self.stale
         ):
             self.log_thread("thread caused root invalidation", thread, thread_id)
-        self.set_root(thread_id, thread)
+        self.set_root(thread_id)
 
     def process_events(self) -> None:
         self.proxy.pump_events()
@@ -451,7 +423,7 @@ class CodexReceiver:
             return
         roots = self.root_ids()
         if len(roots) == 1:
-            self.set_root(roots[0])
+            self.set_root(roots[0][0])
         elif len(roots) > 1:
             self.log_root_threads(roots, "multiple loaded root thread")
             self.invalidate("Codex has multiple loaded root conversations")
@@ -466,19 +438,16 @@ class CodexReceiver:
         if message is None:
             return
         self.process_events()
+        if self.stale:
+            return
         roots = self.root_ids()
-        if self.stale or roots != [self.thread_id]:
-            if not self.stale:
-                offending_roots = [
-                    thread_id for thread_id in roots
-                    if thread_id != self.thread_id
-                ]
-                if not offending_roots:
-                    offending_roots = [self.thread_id]
-                self.log_root_threads(
-                    offending_roots, "root changed before queued delivery",
-                )
-                self.invalidate("Codex root changed before queued delivery")
+        root_ids = [thread_id for thread_id, _ in roots]
+        if root_ids != [self.thread_id]:
+            self.log_root_threads(
+                roots or [(self.thread_id, {"id": self.thread_id})],
+                "root changed before queued delivery",
+            )
+            self.invalidate("Codex root changed before queued delivery")
             return
         endpoint = "unix://" + self.socket_path
         try:
