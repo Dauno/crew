@@ -145,6 +145,14 @@ jq -s '
 ' "${CREW_HOME:-${XDG_DATA_HOME:-$HOME/.local/share}/crew}/metrics.jsonl"
 ```
 
+## Skills
+
+The `plan`, `implement`, `review` and `git` skills guide planning, changes,
+reviews and delivery. The `nodes`, `memory` and `onboard` skills support
+collaboration and repository work. The role skills draw on
+[ponytail](https://github.com/DietrichGebert/ponytail) and
+[mattpocock/skills](https://github.com/mattpocock/skills), both MIT.
+
 ## Develop
 
 Run a local checkout with any supported CLI:

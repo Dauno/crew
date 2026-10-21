@@ -21,6 +21,10 @@ readable, so commit nothing private.
 - `claude/`: the Claude Code adapter, a plugin that carries the skills.
 - `skills/nodes/`: Kitty messaging between agents, with `scripts/nodes.sh`.
   The package installs it on the PATH as `crew-nodes`.
+- `skills/plan/`: verify requests and agree on scope before implementation.
+- `skills/implement/`: make and verify requested code changes.
+- `skills/review/`: inspect changes and report concrete findings.
+- `skills/git/`: commit and deliver approved changes.
 - `skills/memory/`: how to read and record decisions and lessons.
 - `skills/onboard/`: how to learn a repository on the first visit.
 - `tests/`: unit tests that `nix flake check` runs.
@@ -254,6 +258,8 @@ A statement by a model is not evidence.
 ## Rules
 
 - Do not commit, push or create remotes unless the coordinator asks.
+- Commit with the repository's configured Git identity. Never pass or set
+  `user.name` or `user.email`.
 - Stage your new files with `git add`; flakes ignore untracked files.
 - Never put secrets, work data or real memory in the repository. It is
   public, and Git history keeps every commit.
