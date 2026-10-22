@@ -32,13 +32,7 @@ Use this skill only while planning. Wait for human approval before acting.
    If you work as a node, send the exact quote and intended scope to the
    parent.
 
-## Plan work with nodes
-
-When implementation uses worker nodes, list each planned node, CLI, model and
-effort. Wait for approval before spawning any node.
-
-Write the brief under `$CREW_RUNS/<task>/`. Include the goal, decisions and
-quotes, approved contract changes, rules and report paths.
+When the work uses nodes, continue with the coordinate skill.
 
 When no nodes are needed, state the implementation scope and verification
 plan.

@@ -43,8 +43,9 @@ writes memory; workers send other proposals to their parent.
 ## Collaboration
 
 Use the nodes skill to coordinate worker nodes through Kitty. Workers send
-completion notices to their parent. Do not assume a worker's claim is
-evidence; inspect its changes and verification results.
+completion notices to their parent. A worker's claim is not evidence; run the
+objective gate from the coordinate skill, and do not re-review work a reviewer
+approved.
 
 ## Native messages
 
@@ -78,6 +79,8 @@ session before messaging again.
 - `review`: inspect changes and report concrete findings.
 - `git`: commit and deliver approved changes.
 - `handoff`: transfer work to a fresh agent near the context limit.
+- `coordinate`: coordinate tasks with worker nodes, from the brief to summary.
+- `explore`: ask a read-only task explorer a question, or work as explorer.
 
 ## Session details
 
