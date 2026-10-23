@@ -3,8 +3,8 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/7c8764b7c7b09b34f632464276218ef9090eaa11";
-    nixpkgs-claude.url = "github:NixOS/nixpkgs/7fd4004d0511991fff3a0524856a9be09e28c5f0";
-    nixpkgs-codex.url = "github:NixOS/nixpkgs/8edc0c72e3a38faf5434e40d1f19431125fe4b30";
+    nixpkgs-claude.url = "github:NixOS/nixpkgs/d74e43d10ae33ce47a3f1c9f43f97033dbc6744b";
+    nixpkgs-codex.url = "github:NixOS/nixpkgs/d74e43d10ae33ce47a3f1c9f43f97033dbc6744b";
     nixpkgs-pi.url = "github:NixOS/nixpkgs/09063bd1f2b36fd9fd793c36dfade7bd40a93dfc";
   };
 
@@ -29,23 +29,7 @@
             config.allowUnfree = true;
           };
           piPkgs = import nixpkgs-pi { inherit system; };
-          codexSource = codexPkgs.fetchFromGitHub {
-            owner = "openai";
-            repo = "codex";
-            tag = "rust-v0.162.1";
-            hash = "sha256-vYVQoXQdaK0bejUzcpf9uVrzNWWWAct9AsO/t261FAs=";
-          };
-          codex = codexPkgs.codex.overrideAttrs (_old: {
-            version = "0.162.1";
-            src = codexSource;
-            cargoDeps = codexPkgs.rustPlatform.fetchCargoVendor {
-              pname = "codex";
-              version = "0.162.1";
-              src = codexSource;
-              sourceRoot = "${codexSource.name}/codex-rs";
-              hash = "sha256-UTu+ws1DqL375C+1jaVI9HBqDHnTuAQr7/h1rSzsEzg=";
-            };
-          });
+          codex = codexPkgs.codex;
           runtimeInputs = [
             pkgs.bash
             pkgs.coreutils
