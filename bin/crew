@@ -407,6 +407,18 @@ else
     --append-system-prompt "$instructions_file"
     --skill "$CREW_SKILLS"
   )
+  add_pi_tools=1
+  for arg in "$@"; do
+    case $arg in
+      --tools|--tools=*|-t|--no-tools|-nt|--no-builtin-tools|-nbt)
+        add_pi_tools=0
+        break
+        ;;
+    esac
+  done
+  if [[ $add_pi_tools == 1 ]]; then
+    pi_args+=(--tools '+grep,+find,+ls')
+  fi
   if [[ $native_receiver == 1 ]]; then
     pi_args+=(--extension "$CREW_SKILLS/nodes/extensions/crew-messages.ts")
   fi
