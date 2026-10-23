@@ -555,6 +555,8 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         self.assertIn("Workers run without confirmation prompts.",
                       record["instructions"])
         self.assertEqual(record["skill"], str(self.skills))
+        tools_index = record["args"].index("--tools") + 1
+        self.assertEqual(record["args"][tools_index], "+grep,+find,+ls")
         self.assertEqual(
             record["args"][-2:],
             ["--offline", "preserve words"],
@@ -564,6 +566,17 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
         self.assertNotIn("--session-dir", record["args"])
         self.assertNotIn("--dangerously-skip-permissions", record["args"])
         self.assertEqual(list(self.tmp.glob("crew-instructions.*")), [])
+
+    def test_pi_tool_selection_flags_override_crew_defaults(self):
+        for option in (
+            "--tools", "-t", "--no-tools", "-nt",
+            "--no-builtin-tools", "-nbt",
+        ):
+            with self.subTest(option=option):
+                self._run("pi", option, "custom", env=self._env())
+                args = self._record()["args"]
+                self.assertEqual(args[-2:], [option, "custom"])
+                self.assertNotIn("+grep,+find,+ls", args)
 
     def test_interactive_pi_loads_native_session_extension(self):
         self._run_tty("pi", "--offline", env=self._env(KITTY_WINDOW_ID="42"))

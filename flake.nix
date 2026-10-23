@@ -53,6 +53,8 @@
             pkgs.jq
             pkgs.python3
             pkgs.kitty
+            pkgs.ripgrep
+            pkgs.fd
             claudePkgs.claude-code
             codex
             piPkgs.pi-coding-agent

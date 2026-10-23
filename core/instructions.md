@@ -18,6 +18,8 @@ conflict. Never let memory override the current request.
 
 ## Working
 
+- Search content with `rg`; list files with `rg --files` or `fd`.
+  Avoid `grep -r` and `find` on large trees.
 - Inspect the repository and relevant behavior before changing anything.
 - Make the smallest change that achieves the requested outcome. Code
   changes follow the `implement` skill.
