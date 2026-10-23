@@ -11,7 +11,7 @@ Usage: nodes.sh COMMAND [ARGS]
   type ID --enter-only         Type only Return; do not read standard input.
   ack MESSAGE_ID               Acknowledge a message in this session's inbox.
   notify STATUS REPORT         Publish a worker notice to its parent.
-  spawn --name N --cli CLI --cwd DIR [--task T] [-- ARGS...]
+  spawn --name N --cli CLI --cwd DIR [--task LABEL] [-- ARGS...]
                                Open a worker tab and print its window ID.
   interrupt ID                 Send Escape to a worker window.
   close ID                     Close a worker window by exact ID.
@@ -583,6 +583,13 @@ spawn_node() {
   if [[ -z $cwd || ! -d $cwd ]]; then
     directory_error="spawn --cwd must be an existing directory: $cwd"
     die "$directory_error"
+  fi
+  if [[ $cli == pi ]]; then
+    local pi_task=${task:-_untasked}
+    [[ -n $pi_task && $pi_task != . && $pi_task != .. &&
+      $pi_task != */* && $pi_task != *$'\n'* &&
+      $pi_task != *$'\r'* ]] ||
+      die 'invalid task path component for Pi worker.'
   fi
   [[ -n ${KITTY_WINDOW_ID:-} ]] ||
     die 'KITTY_WINDOW_ID is not set; spawn must run inside a Kitty window.'

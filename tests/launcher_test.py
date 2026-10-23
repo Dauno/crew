@@ -623,6 +623,38 @@ pathlib.Path(os.environ["KITTY_CAPTURE"]).write_text(
                 result = self._run("pi", env=env, expected=2)
                 self.assertFalse(self.capture.exists())
 
+    def test_pi_worker_selector_guard_matches_spawn_preflight(self):
+        invalid_tasks = (
+            "example/r1", ".", "..", "line\nbreak", "line\rbreak",
+        )
+        for task in invalid_tasks:
+            with self.subTest(task=task):
+                env = self._env(
+                    CREW_ROLE="worker", CREW_TASK=task,
+                    KITTY_WINDOW_ID="42", CREW_STARTED_AT="1792412345",
+                )
+                result = self._run("pi", env=env, expected=2)
+                self.assertIn(
+                    "invalid task path component for Pi worker",
+                    result.stderr,
+                )
+                self.assertFalse(self.capture.exists())
+
+        env = self._env(
+            CREW_ROLE="worker", CREW_TASK="", KITTY_WINDOW_ID="42",
+            CREW_STARTED_AT="1792412345",
+        )
+        self._run("pi", env=env)
+        record = self._record()
+        session_dir = (
+            self.home / ".local/share/crew/runs" / "_untasked" / "pi"
+            / "42-1792412345"
+        )
+        self.assertEqual(
+            record["args"][record["args"].index("--session-dir") + 1],
+            str(session_dir),
+        )
+
     def test_launcher_writes_only_to_crew_home_and_temp_files(self):
         self._run("codex")
         crew_home = self.home / ".local/share/crew"

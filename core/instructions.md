@@ -69,6 +69,15 @@ input. Never use terminal input as a fallback for a native message. Codex
 messaging fails closed if its root conversation changes. Restart the crew
 session before messaging again.
 
+A local final answer does not reach the agent that requested work. Return
+requested results through native messaging, including short answers. Use
+`notify` for task reports. For a short answer, find the live Kitty window
+whose `crew_session` matches the delivered message's `CREW_FROM`, then use
+`crew-nodes send WINDOW_ID`. Do not confuse a session ID with a window ID,
+or blindly reuse a parent route that may now point elsewhere. Do not answer
+notices, replies or acknowledgements unless they request an answer. Explicit
+acknowledgement rules and human instructions take precedence.
+
 ## Skills
 
 - `memory`: read, record and promote private decisions, lessons and evidence.
