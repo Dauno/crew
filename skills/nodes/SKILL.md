@@ -91,7 +91,7 @@ Unattended permissions can trigger a one-time notice.
 
 Ask the human to answer trust or permissions dialogs in that worker's tab.
 Never answer a dialog yourself or send a brief to it. Return could accept it.
-Pi 1.3.0 has no tool permission prompts and needs no bypass flag.
+Pi 1.4.0 has no tool permission prompts and needs no bypass flag.
 
 `send` and `notify` never inspect or change the destination editor.
 `type --enter` uses Kitty screen parsing to avoid replacing human input.
