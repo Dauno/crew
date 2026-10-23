@@ -82,7 +82,7 @@ workers propose them. The human's current request takes precedence.
 Claude Code's human session keeps confirmation prompts; a settings rule
 permits the nodes helper. The human's Codex session runs with
 `--sandbox danger-full-access`. Pi keeps its usual configuration. Workers
-always run without tool confirmation prompts. Pi 1.3.0 needs no permission
+always run without tool confirmation prompts. Pi 1.4.0 needs no permission
 flag. Pi can ask whether to trust project resources under `.pi`.
 The human answers project trust dialogs.
 

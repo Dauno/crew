@@ -228,7 +228,7 @@ The human's Codex session runs with `--sandbox danger-full-access`.
 Workers run without tool confirmation prompts.
 Claude Code workers get `--dangerously-skip-permissions`.
 Codex workers get `--dangerously-bypass-approvals-and-sandbox`.
-Pi 1.3.0 has no tool permission prompts and needs no bypass flag.
+Pi 1.4.0 has no tool permission prompts and needs no bypass flag.
 Crew adds Pi's built-in `grep`, `find` and `ls` tools unless the user
 passes a tool-selection flag.
 Pi can ask whether to trust project resources under `.pi`.
