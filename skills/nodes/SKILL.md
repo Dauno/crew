@@ -108,7 +108,8 @@ crew-nodes read 456 screen
 
 Keep each brief and report in `$CREW_RUNS/<task>/`. A brief names the skill
 for each role: `plan`, `implement`, `review`, `git`, `coordinate` or
-`explore`.
+`explore`. Each request must specify how to return its result: a report path
+and `notify`, or a short native answer using `send`.
 Use one-line notices in this format:
 `<task>/<node>: <status>. Report: <path>`. The coordinator writes memory.
 Workers propose memory entries in their reports.
@@ -116,6 +117,12 @@ Workers propose memory entries in their reports.
 Create a new node for every new task. For a continuation within the same task,
 first confirm its ID, directory, CLI and task labels with `list`. Then inspect
 its screen and context before assigning more work.
+
+`--task` is a label, not the prompt. Pi requires one flat path component;
+empty task labels use `_untasked`. A returned Kitty ID means Kitty created a
+tab, not that the CLI started. Read the window screen after launch. If no
+window appears, report the failure and investigate before repeating the same
+command. Keep credentials and sensitive arguments out of diagnostics.
 
 In Claude Code, `/context` opens a `Context Usage` view. `/context all`
 expands the view. Record only its summary. The full view can expose private

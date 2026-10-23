@@ -1127,6 +1127,63 @@ class NodesTest(unittest.TestCase):
             any("close-window" in call["args"] for call in self.calls())
         )
 
+    def test_spawn_rejects_invalid_pi_task_before_reserving_or_launching(
+        self,
+    ):
+        tasks = ("example/r1-pi", ".", "..", "line\nbreak", "line\rbreak")
+        for task in tasks:
+            with self.subTest(task=task):
+                env = self.env.copy()
+                env.pop("CREW_TASK", None)
+                before = set((self.crew_home / "mailboxes").iterdir())
+                result = self.run_helper(
+                    "spawn", "--name", "worker", "--cli", "pi",
+                    "--cwd", str(self.work), "--task", task, env=env,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("invalid task path component for Pi worker",
+                              result.stderr)
+                self.assertFalse(self.calls())
+                mailboxes = set((self.crew_home / "mailboxes").iterdir())
+                self.assertEqual(mailboxes, before)
+
+    def test_spawn_pi_task_fallback_and_flat_task_remain_valid(self):
+        valid_tasks = (None, "", "example-r1")
+        for task in valid_tasks:
+            with self.subTest(task=task):
+                self.log.write_text("", encoding="utf-8")
+                env = self.env.copy()
+                env.pop("CREW_TASK", None)
+                args = [
+                    "spawn", "--name", "worker", "--cli", "pi",
+                    "--cwd", str(self.work),
+                ]
+                if task is not None:
+                    args.extend(("--task", task))
+                result = self.run_helper(*args, env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                launch = next(call for call in self.calls()
+                              if "launch" in call["args"])
+                self.assertIn("CREW_TASK=" + (task or ""), launch["args"])
+                session = next(value.split("=", 1)[1]
+                               for value in launch["args"]
+                               if value.startswith("CREW_SESSION_ID="))
+                metadata = json.loads((self.crew_home / "mailboxes" / session
+                                       / "session.json").read_text())
+                self.assertEqual(metadata["task"], task or "")
+                mailbox = self.crew_home / "mailboxes" / session
+                self.assertTrue(mailbox.is_dir())
+
+    def test_spawn_slash_task_remains_allowed_for_non_pi_clis(self):
+        for cli in ("claude", "codex"):
+            with self.subTest(cli=cli):
+                result = self.run_helper(
+                    "spawn", "--name", "worker", "--cli", cli,
+                    "--cwd", str(self.work), "--task", "example/r1",
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("launch", self.calls()[-1]["args"])
+
     def test_spawn_sets_worker_environment_and_labels(self):
         before = int(time.time())
         result = self.run_helper(
