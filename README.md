@@ -60,9 +60,12 @@ Messages may contain up to 8 KiB of UTF-8 text. Send a report path for longer
 content. The receiver delivers through its CLI integration, never by typing
 into the editor.
 
-After reading a message, the recipient runs `crew-nodes ack MESSAGE_ID`.
-Only this explicit acknowledgement moves the message to `received`.
-Acknowledgement does not report task completion or promise exactly-once work.
+Claude and Codex agents run `crew-nodes ack MESSAGE_ID` after reading a
+message. Pi automatically runs `ack` only after verifying the exact custom
+message in the active Pi session branch and persisted JSONL file, whose header
+matches that Pi session. This records persisted incorporation, not model
+reading or task completion. Manual Pi acknowledgements remain supported.
+Acknowledgements do not promise exactly-once work.
 `notify STATUS REPORT` uses the same mailbox and keeps its current notice text
 and one metrics record per call.
 

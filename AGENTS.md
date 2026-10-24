@@ -129,9 +129,13 @@ content. It never types into the target's editor. `send --enter` and
 `type` preserves the previous terminal behavior, including its editor checks.
 `ack MESSAGE_ID` accepts only the current session's delivered message. It is
 idempotent after receipt. Only `ack` moves a message from `pending` to
-`received`; adapters never infer receipt from native API calls or hook output.
-Agents acknowledge each crew message after reading it. An acknowledgement does
-not report task completion and does not promise exactly-once execution.
+`received`. Claude and Codex agents explicitly acknowledge after reading.
+Pi automatically runs `ack` only after the exact custom message appears in the
+active Pi session branch and its JSONL file, with the matching session header
+ID. This verifies persisted incorporation, not model reading or task
+completion.
+Manual Pi acknowledgements remain supported. No adapter promises exactly-once
+processing.
 
 `notify` needs `CREW_TASK`, `CREW_NODE` and `CREW_PARENT`. It records the
 worker's metrics once, then publishes this existing notice text natively:
@@ -149,10 +153,14 @@ A private dispatch marker prevents repeated native injection before `ack`.
 
 Each receiver processes one message at a time. An acknowledgement validates
 `CREW_SESSION_ID`, moves that message into `received/` and permits the next
-message. If a receiver crashes after reserving delivery, crew does not inject
-the same message again automatically. The pending file remains for explicit
-reconciliation. New sessions never inherit pending files automatically.
-There is no terminal fallback when a native receiver is missing.
+message. Pi's `list` entry includes `delivery: null`, a held message ID and
+age in seconds, or `status: unavailable` if inspection fails. Unavailable does
+not mean received. Reading status never changes mailbox state, and holds never
+expire. If a receiver crashes after reserving delivery, crew does
+not inject the same message again automatically. The pending file remains for
+explicit reconciliation. New sessions never inherit pending files
+automatically. There is no terminal fallback when a native receiver is
+missing.
 
 Pi uses a session extension. Claude uses `SessionStart` `watchPaths` and a
 one-shot `FileChanged` hook with `asyncRewake`. The hook emits context but

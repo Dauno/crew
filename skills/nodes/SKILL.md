@@ -50,6 +50,9 @@ explicit terminal input. `notify` resolves `CREW_PARENT` through the parent's
 
 `list` prints one JSON object per window. Each object includes its ID, title,
 working directory, foreground command, `crew_*` variables and `self` flag.
+Pi windows also include `delivery: null`, a held delivery's ID and age in
+seconds, or `status: unavailable` if inspection fails. Unavailable does not
+mean received. This status is read-only; holds never expire.
 Confirm the exact ID and command with `list` before sending. Never send to a
 window marked `self` or to your own window. The helper rejects sends,
 interrupts and closes to its own window.
@@ -58,12 +61,16 @@ interrupts and closes to its own window.
 atomically. Messages allow up to 8 KiB of UTF-8 text. For longer reports,
 write a file and send its path. The receiver presents the message ID and
 sender to the agent.
-After reading the message, run `crew-nodes ack MESSAGE_ID` before acting.
-Only that explicit command marks it received. It does not mean task
-completion.
-Acknowledge only a `CREW_MESSAGE_ID` delivered by the CLI. Never read or list
-`$CREW_INBOX` files directly. To wait for a reply, end the turn. Do not poll
-with sleep loops; the receiver delivers messages when they arrive.
+Claude and Codex agents acknowledge each message after reading it, using
+`crew-nodes ack MESSAGE_ID` before acting. Pi automatically runs `ack` only
+after its receiver verifies the exact custom message in the active Pi session
+branch and persisted JSONL file, whose header matches that Pi session. This
+records persisted incorporation, not model reading or task completion. Pi does
+not require a routine model acknowledgement; manual `ack` remains supported.
+Read a message before manually acknowledging it, and use only its delivered
+`CREW_MESSAGE_ID`. Never read or list `$CREW_INBOX` files directly. To wait
+for a reply, end the turn. Do not poll with sleep loops; the receiver delivers
+messages when they arrive.
 
 `ack` validates the current `CREW_SESSION_ID` and accepts only the current
 session's dispatched message. Repeating an acknowledgement is harmless.

@@ -155,20 +155,43 @@ native_target_session() {
 }
 
 list_windows() {
-  local listing
+  local listing session_ids deliveries script
   listing=$(kitty_ls)
-  jq -c --arg self "${KITTY_WINDOW_ID:-}" '
+  script=$(mailbox_script)
+  session_ids=$(jq -r '
     .[]?.tabs[]?.windows[]?
-    | {
-        id,
-        title: (.title // ""),
-        cwd: (.cwd // ""),
-        command: ((.foreground_processes[0].cmdline // .cmdline // [])
+    | select(.user_vars.crew_cli == "pi")
+    | .user_vars.crew_session // empty
+    | select(type == "string" and length > 0)
+  ' <<<"$listing" | sort -u)
+  deliveries='{}'
+  if [[ -n $session_ids ]]; then
+    if ! deliveries=$(printf '%s\n' "$session_ids" |
+      python3 "$script" status --sessions); then
+      deliveries=$(printf '%s\n' "$session_ids" | jq -Rn '
+        [inputs | select(length > 0)
+          | {key: ., value: {status: "unavailable"}}]
+        | from_entries
+      ')
+    fi
+  fi
+  jq -c --arg self "${KITTY_WINDOW_ID:-}" --argjson deliveries "$deliveries" '
+    .[]?.tabs[]?.windows[]? as $window
+    | ({
+        id: $window.id,
+        title: ($window.title // ""),
+        cwd: ($window.cwd // ""),
+        command: (($window.foreground_processes[0].cmdline
+          // $window.cmdline // [])
           | if type == "array" then join(" ") else tostring end),
-        vars: ((.user_vars // {})
+        vars: (($window.user_vars // {})
           | with_entries(select(.key | startswith("crew_")))),
-        self: ((.id | tostring) == $self)
-      }
+        self: (($window.id | tostring) == $self)
+      } + (if $window.user_vars.crew_cli == "pi" then
+        {delivery: (if ($window.user_vars.crew_session | type) == "string"
+          then $deliveries[$window.user_vars.crew_session] // null
+          else null end)}
+      else {} end))
   ' <<<"$listing"
 }
 

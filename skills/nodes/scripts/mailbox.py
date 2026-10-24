@@ -12,6 +12,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import time
 import uuid
 from typing import Iterator
 
@@ -349,6 +350,38 @@ def claim_next(*, home: Path | None = None) -> dict | None:
         return message
 
 
+def delivery_status(
+    session_id: str,
+    *,
+    home: Path | None = None,
+) -> dict[str, str | int] | None:
+    """Return the age of a held delivery without changing mailbox state."""
+    home = home or _home()
+    path = session_path(home, session_id, create=False)
+    marker_path = path / ".delivery.json"
+    if marker_path.is_symlink():
+        raise MailboxError("refusing symlinked delivery marker")
+    try:
+        marker_stat = marker_path.stat()
+        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+        message_id = _session_id(marker["id"], "delivery message ID")
+    except FileNotFoundError:
+        return None
+    except (
+        OSError,
+        KeyError,
+        TypeError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+        MailboxError,
+    ) as error:
+        raise MailboxError("delivery marker is unreadable") from error
+    if (path / "received" / f"{message_id}.json").exists():
+        return None
+    age_seconds = max(0, int(time.time() - marker_stat.st_mtime))
+    return {"id": message_id, "age_seconds": age_seconds}
+
+
 def _write_signal(path: Path) -> None:
     signal = path / "signal"
     temporary = path / f".signal.{uuid.uuid4().hex}"
@@ -481,6 +514,8 @@ def main(argv: list[str] | None = None) -> int:
     commands.add_parser("claim")
     acknowledge_parser = commands.add_parser("ack")
     acknowledge_parser.add_argument("message_id")
+    status = commands.add_parser("status")
+    status.add_argument("--sessions", action="store_true")
     state = commands.add_parser("codex-state")
     state.add_argument("--session", default="")
     set_state = commands.add_parser("codex-set")
@@ -537,6 +572,19 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "ack":
             changed = acknowledge(args.message_id)
             print(("acknowledged " if changed else "already acknowledged ") + args.message_id)
+        elif args.command == "status":
+            if not args.sessions:
+                raise MailboxError("status requires --sessions")
+            session_ids = sorted({
+                line.strip() for line in sys.stdin if line.strip()
+            })
+            values = {}
+            for session_id in session_ids:
+                try:
+                    values[session_id] = delivery_status(session_id)
+                except (MailboxError, OSError):
+                    values[session_id] = {"status": "unavailable"}
+            print(json.dumps(values, separators=(",", ":")))
         elif args.command == "codex-state":
             value = codex_state(session_id=args.session or None)
             if value is not None:

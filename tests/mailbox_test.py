@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import stat
 import tempfile
+import time
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from unittest import mock
@@ -162,6 +163,29 @@ class MailboxTest(unittest.TestCase):
         self.assertTrue((self.receiver / "received" / f"{first}.json").is_file())
         self.assertTrue((self.receiver / "received" / f"{second}.json").is_file())
         self.assertEqual(list((self.receiver / "pending").glob("*.json")), [])
+
+    def test_delivery_status_is_read_only_and_reports_age(self):
+        message_id = self.publish("held for status")
+        with self.receiver_env():
+            claimed = mailbox.claim_next(home=self.home)
+            self.assertEqual(claimed["id"], message_id)
+            marker = self.receiver / ".delivery.json"
+            os.utime(marker, (time.time() - 80, time.time() - 80))
+            before = marker.read_bytes()
+            status = mailbox.delivery_status(RECIPIENT, home=self.home)
+            self.assertEqual(status["id"], message_id)
+            self.assertGreaterEqual(status["age_seconds"], 79)
+            self.assertEqual(marker.read_bytes(), before)
+            pending = self.receiver / "pending" / f"{message_id}.json"
+            received = self.receiver / "received" / f"{message_id}.json"
+            self.assertTrue(pending.is_file())
+            self.assertFalse(received.exists())
+            self.assertIsNone(mailbox.delivery_status(OTHER, home=self.home))
+            self.assertFalse((self.home / "mailboxes" / OTHER).exists())
+            self.assertTrue(mailbox.acknowledge(message_id, home=self.home))
+            self.assertIsNone(
+                mailbox.delivery_status(RECIPIENT, home=self.home)
+            )
 
     def test_repeated_claim_after_crash_does_not_reinject(self):
         message_id = self.publish("do not duplicate")
