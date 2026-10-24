@@ -308,6 +308,7 @@ class NodesTest(unittest.TestCase):
             "crew_session": self.parent_session,
         })
         self.assertTrue(rows[0]["self"])
+        self.assertIsNone(rows[0]["delivery"])
         self.assertEqual(rows[1]["command"], "codex --help")
         self.assertEqual(
             rows[1]["vars"], {
@@ -319,11 +320,74 @@ class NodesTest(unittest.TestCase):
             }
         )
         self.assertFalse(rows[1]["self"])
+        self.assertNotIn("delivery", rows[1])
         self.assertEqual(rows[2]["id"], 9)
         self.assertFalse(rows[2]["self"])
         self.assertEqual(
             self.calls()[0]["listen_on"], "unix:/tmp/crew-test.sock"
         )
+
+    def test_list_handles_pi_window_without_session_label(self):
+        self.ls_data[0]["tabs"][0]["windows"][0]["user_vars"].pop(
+            "crew_session"
+        )
+        env = self.env.copy()
+        env["FAKE_KITTEN_LS"] = json.dumps(self.ls_data)
+
+        result = self.run_helper("list", env=env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(len(rows), 3)
+        pi_window = next(row for row in rows if row["id"] == 7)
+        self.assertIsNone(pi_window["delivery"])
+        self.assertTrue(any(row["id"] == 8 for row in rows))
+
+    def test_list_keeps_windows_when_pi_marker_is_unreadable(self):
+        inbox = self.crew_home / "mailboxes" / self.parent_session
+        inbox.mkdir(parents=True)
+        marker = inbox / ".delivery.json"
+        marker.write_text('{"id":"invalid"}', encoding="utf-8")
+        before = marker.read_bytes()
+
+        result = self.run_helper("list")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual(len(rows), 3)
+        pi_window = next(row for row in rows if row["id"] == 7)
+        self.assertEqual(pi_window["delivery"], {"status": "unavailable"})
+        self.assertTrue(any(row["id"] == 8 for row in rows))
+        self.assertEqual(marker.read_bytes(), before)
+        self.assertFalse((inbox / "received").exists())
+
+    def test_list_shows_pi_delivery_id_and_age_without_acknowledging(self):
+        inbox = self.crew_home / "mailboxes" / self.parent_session
+        pending = inbox / "pending"
+        pending.mkdir(parents=True)
+        message_id = "44444444-4444-4444-8444-444444444444"
+        message = pending / f"{message_id}.json"
+        message.write_text(json.dumps({
+            "id": message_id, "from": self.sender_session, "text": "held",
+        }), encoding="utf-8")
+        marker = inbox / ".delivery.json"
+        marker.write_text(json.dumps({"id": message_id}), encoding="utf-8")
+        old_time = time.time() - 90
+        os.utime(marker, (old_time, old_time))
+        before = marker.read_bytes()
+
+        result = self.run_helper("list")
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        pi_window = next(row for row in rows if row["id"] == 7)
+        self.assertEqual(pi_window["delivery"]["id"], message_id)
+        self.assertGreaterEqual(pi_window["delivery"]["age_seconds"], 89)
+        self.assertEqual(marker.read_bytes(), before)
+        self.assertTrue(message.is_file())
+        self.assertFalse((inbox / "received" / message.name).exists())
+        codex_window = next(row for row in rows if row["id"] == 8)
+        self.assertNotIn("delivery", codex_window)
 
     def test_list_keeps_stderr_separate_from_json(self):
         env = self.env.copy()
