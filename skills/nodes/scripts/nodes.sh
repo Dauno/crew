@@ -11,7 +11,7 @@ Usage: nodes.sh COMMAND [ARGS]
   type ID --enter-only         Type only Return; do not read standard input.
   ack MESSAGE_ID               Acknowledge a message in this session's inbox.
   notify STATUS REPORT         Publish a worker notice to its parent.
-  spawn --name N --cli CLI --cwd DIR [--task LABEL] [-- ARGS...]
+  spawn --name N --cli CLI --cwd DIR [--task LABEL] [--split] [-- ARGS...]
                                Open a worker tab and print its window ID.
   interrupt ID                 Send Escape to a worker window.
   close ID                     Close a worker window by exact ID.
@@ -588,7 +588,7 @@ notify_parent() {
 
 spawn_node() {
   local name='' cli='' cwd='' task=${CREW_TASK:-} reply directory_error
-  local started_at session_id crew_home inbox
+  local started_at session_id crew_home inbox split=0
   local -a extra_args=()
   while [[ $# -gt 0 ]]; do
     case $1 in
@@ -596,6 +596,7 @@ spawn_node() {
       --cli) [[ $# -ge 2 ]] || usage; cli=$2; shift 2 ;;
       --cwd) [[ $# -ge 2 ]] || usage; cwd=$2; shift 2 ;;
       --task) [[ $# -ge 2 ]] || usage; task=$2; shift 2 ;;
+      --split) split=1; shift ;;
       --) shift; extra_args=("$@"); break ;;
       *) die "unknown spawn argument: $1" ;;
     esac
@@ -634,8 +635,15 @@ spawn_node() {
     die 'could not reserve worker session identity.'
   fi
 
-  if ! reply=$(kitty_remote launch --type=tab --keep-focus --copy-env \
-    --tab-title "$name · $cli" \
+  local -a launch_args=(launch --keep-focus --copy-env)
+  if [[ $split == 1 ]]; then
+    launch_args+=(--type=window --match "window_id:$KITTY_WINDOW_ID"
+      --next-to "id:$KITTY_WINDOW_ID" --location=vsplit
+      --title "$name · $cli")
+  else
+    launch_args+=(--type=tab --tab-title "$name · $cli")
+  fi
+  if ! reply=$(kitty_remote "${launch_args[@]}" \
     --cwd "$cwd" \
     --env "CREW_CLI=$cli" \
     --env "CREW_HOME=$crew_home" \

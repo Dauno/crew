@@ -29,6 +29,8 @@ INPUT
 crew-nodes ack 550e8400-e29b-41d4-a716-446655440000
 crew-nodes spawn --name reviewer --cli claude \
   --cwd /path/to/repository --task example
+crew-nodes spawn --name guide --cli claude \
+  --cwd /path/to/repository --task example --split
 crew-nodes interrupt 456
 crew-nodes close 456
 ```
@@ -172,7 +174,9 @@ draft, so inspect the screen before sending a stop command.
 `spawn` requires `CREW_BIN` and a running Kitty window. It creates a worker
 tab with a fresh `CREW_SESSION_ID`, `CREW_INBOX`, task labels and parent ID.
 It prints the new window ID. Keep the worker's task, repository and report
-path explicit in its brief.
+path explicit in its brief. Use `spawn --split` for the guide role by default.
+It opens a window next to the caller in the current tab. It respects Kitty's
+active layout and does not change Kitty configuration.
 Pass CLI arguments after `--` only when the human requests a model or option.
 By default, each worker uses its CLI's default model. A brief alone does not
 change a model; pass the requested model in the `spawn` command.

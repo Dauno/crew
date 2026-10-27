@@ -33,9 +33,18 @@ python3 "$mailbox" init --cli pi --native 1 >/dev/null
 kitty_pid=''
 parent_id=''
 node_id=''
+extra_tab_id=''
+split_id=''
 cleanup() {
   local status=$?
   trap - EXIT
+  if [[ -n $split_id ]]; then
+    crew-nodes close "$split_id" >/dev/null 2>&1 || true
+  fi
+  if [[ -n $extra_tab_id ]]; then
+    kitten @ --to "$listen_on" close-window --match "id:$extra_tab_id" \
+      >/dev/null 2>&1 || true
+  fi
   if [[ -n $node_id ]]; then
     crew-nodes close "$node_id" >/dev/null 2>&1 || true
   fi
@@ -58,6 +67,9 @@ set -euo pipefail
 printf 'marker=%s\n' "${CREW_LIVE_MARKER:-}"
 printf 'role=%s\n' "${CREW_ROLE:-}"
 printf 'task=%s\n' "${CREW_TASK:-}"
+printf 'kitty_window=%s\n' "${KITTY_WINDOW_ID:-}"
+printf 'kitty_listen=%s\n' "${KITTY_LISTEN_ON:-}"
+printf 'crew_parent=%s\n' "${CREW_PARENT:-}"
 printf 'live report\n' >"${CREW_LIVE_REPORT:?}"
 crew-nodes notify done "$CREW_LIVE_REPORT"
 printf 'READY\n'
@@ -225,6 +237,65 @@ for expected in \
   }
 done
 
+extra_tab_id=$(kitten @ --to "$listen_on" launch --type=tab \
+  --title split-anchor-test --cwd "$tmp" "$tmp/parent.sh")
+[[ $extra_tab_id =~ ^[1-9][0-9]*$ ]] || {
+  printf 'nodes-live: could not create the extra active tab.\n' >&2
+  exit 1
+}
+split_id=$(crew-nodes spawn --name live-split --cli claude \
+  --cwd "$tmp" --task live-test --split)
+[[ $split_id =~ ^[1-9][0-9]*$ ]] || {
+  printf 'nodes-live: split spawn did not return a window ID.\n' >&2
+  exit 1
+}
+split_ready=0
+for _ in {1..100}; do
+  transcript=$(crew-nodes read "$split_id" screen)
+  if grep -Fq 'READY' <<<"$transcript"; then
+    split_ready=1
+    break
+  fi
+  sleep 0.1
+done
+[[ $split_ready == 1 ]] || {
+  printf 'nodes-live: split fake worker did not become ready.\n' >&2
+  exit 1
+}
+for expected in "kitty_window=$split_id" \
+  "kitty_listen=$listen_on" "crew_parent=$parent_id"; do
+  grep -Fq "$expected" <<<"$transcript" || {
+    printf 'nodes-live: split worker missing launch environment: %s\n' \
+      "$expected" >&2
+    exit 1
+  }
+done
+kitten @ --to "$listen_on" ls >"$tmp/after-split.json"
+parent_tab=$(jq -r --argjson id "$parent_id" \
+  '.[] | .tabs[] | select(any(.windows[]; .id == $id)) | .id' \
+  "$tmp/after-split.json")
+split_tab=$(jq -r --argjson id "$split_id" \
+  '.[] | .tabs[] | select(any(.windows[]; .id == $id)) | .id' \
+  "$tmp/after-split.json")
+[[ -n $parent_tab && $parent_tab == "$split_tab" ]] || {
+  printf 'nodes-live: split window did not land in caller tab.\n' >&2
+  exit 1
+}
+closed_split_id=$split_id
+crew-nodes close "$split_id"
+kitten @ --to "$listen_on" close-window --match "id:$extra_tab_id"
+extra_tab_id=''
+split_id=''
+kitten @ --to "$listen_on" ls >"$tmp/after-close.json"
+jq -e --argjson id "$parent_id" \
+  'any(.[].tabs[].windows[]; .id == $id)' "$tmp/after-close.json" >/dev/null
+jq -e --argjson id "$node_id" \
+  'any(.[].tabs[].windows[]; .id == $id)' "$tmp/after-close.json" >/dev/null
+if jq -e --argjson id "$closed_split_id" \
+  'any(.[].tabs[].windows[]; .id == $id)' "$tmp/after-close.json" >/dev/null; then
+  printf 'nodes-live: close left the split window open.\n' >&2
+  exit 1
+fi
 bash -n "$helper"
 printf '%s\n' \
   'nodes-live: native notice stored and explicitly acknowledged.' \
