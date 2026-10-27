@@ -11,15 +11,22 @@ format for both.
 
 ## When to hand off
 
-At 70% context usage, take no new substantive work. Hand off instead of
-compacting. Hand off sooner when the coordinator or human asks.
+At 70% context usage or 250k tokens, whichever comes first, take no new
+substantive work. Hand off instead of compacting. This rule also applies to
+the human session. At each milestone or iteration end, write a checkpoint.
+The first one creates `handoff-<node>-1.md`; later checkpoints overwrite the
+latest file. A handoff to a new agent creates the next number. Fresh sessions
+resume from the latest file. After a pause over one hour with context over
+100k, resume in a fresh session from the checkpoint, not the old session.
+Hand off sooner when the coordinator or human asks.
 
 ## Outgoing agent
 
 1. Stop at a safe point. Leave no half-finished edit.
-2. Write the handoff to
-   `$CREW_RUNS/<task>/handoff-<node>-<n>.md`. Set `<n>` one higher than
-   the largest existing number for that node, starting at 1.
+2. Write to `$CREW_RUNS/<task>/handoff-<node>-<n>.md`. For the first
+   checkpoint, set `<n>` to 1; later checkpoints overwrite the latest file.
+   For a handoff to a new agent, use one higher than the largest existing
+   number for that node, starting at 1.
 3. Notify the parent with the path. Workers use `crew-nodes notify`. The
    coordinator tells the human, who starts a fresh session with that path.
 4. Stay idle and edit nothing after notifying.
@@ -41,8 +48,13 @@ transcript and every uncommitted path is explained.
 
 ## Coordinator
 
+At each human-session milestone end, write or update the numbered handoff
+file in the same format. Suggest a fresh session, which resumes from the
+latest handoff.
+
 1. Confirm the old agent is idle on screen. Check the handoff against
    `git status`.
 2. Spawn a fresh node with the same role, following the `nodes` skill.
-3. Send it the brief and handoff paths. Wait for it to confirm understanding.
+3. Send it the brief and latest handoff paths. Wait for it to confirm
+   understanding.
 4. Close the old node only after that confirmation.

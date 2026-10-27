@@ -21,12 +21,13 @@ readable, so commit nothing private.
 - `claude/`: the Claude Code adapter, a plugin that carries the skills.
 - `skills/nodes/`: Kitty messaging between agents, with `scripts/nodes.sh`.
   The package installs it on the PATH as `crew-nodes`.
-- `skills/plan/`: verify requests and agree on scope before implementation.
+- `skills/plan/`: verify requests and agree on scope before orchestration.
 - `skills/implement/`: make and verify requested code changes.
 - `skills/review/`: inspect changes and report concrete findings.
 - `skills/git/`: commit and deliver approved changes.
 - `skills/handoff/`: transfer work to a fresh agent near the context limit.
-- `skills/coordinate/`: coordinate worker nodes from brief to summary.
+- `skills/coordinate/`: orchestrate milestones and deliveries from approved
+  scope.
 - `skills/explore/`: ask or act as the read-only task explorer.
 - `skills/memory/`: how to read and record decisions and lessons.
 - `skills/onboard/`: how to learn a repository on the first visit.
@@ -209,7 +210,14 @@ Agents pass them only when the human asks; by default workers get none.
 
 ### Runs
 
-Each task keeps briefs and reports in `$CREW_RUNS/<task>/`.
+Each task keeps `brief.md`, `deliveries.md`, handoffs and reports in
+`$CREW_RUNS/<task>/`. `deliveries.md` tracks each milestone's deliverable,
+done criteria, roles and models, execution mode, status and PR. Parallel
+writers use separate branches and worktrees at
+`$CREW_RUNS/<task>/worktrees/<milestone>`. The coordinator creates them.
+The session that synchronizes `main` after the merge removes each worktree
+with `git worktree remove`.
+
 A notice is one line:
 `<task>/<node>: <status>. Report: <path>. Metrics: <summary>`.
 
