@@ -93,8 +93,9 @@ acknowledgement rules and human instructions take precedence.
 - `implement`: make and verify requested code changes.
 - `review`: inspect changes and report concrete findings.
 - `git`: commit and deliver approved changes.
-- `handoff`: transfer work to a fresh agent near the context limit.
-- `coordinate`: coordinate tasks with worker nodes, from the brief to summary.
+- `handoff`: transfer work at 70% context or 250k tokens, whichever comes
+  first; keep rolling checkpoints.
+- `coordinate`: orchestrate milestones and deliveries from approved scope.
 - `explore`: ask a read-only task explorer a question, or work as explorer.
 
 ## Session details

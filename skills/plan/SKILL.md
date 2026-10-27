@@ -15,7 +15,8 @@ Use this skill only while planning. Wait for human approval before acting.
 2. Mark claims you cannot verify and assumptions that could affect scope or
    sequence.
 3. Identify repository contracts. A contract change needs approval from the
-   coordinator and the human. Record applicable contracts in the brief.
+   coordinator and the human. Record applicable contracts in the approved
+   scope.
 4. Challenge work the need does not justify.
 
 ## Present decisions
@@ -32,7 +33,5 @@ Use this skill only while planning. Wait for human approval before acting.
    If you work as a node, send the exact quote and intended scope to the
    parent.
 
-When the work uses nodes, continue with the coordinate skill.
-
-When no nodes are needed, state the implementation scope and verification
-plan.
+State the implementation scope and verification plan. After approval, hand
+approved scope to `coordinate` for orchestration and delivery.

@@ -141,7 +141,7 @@ before interpreting a percentage. Record only the context indicator.
 In Pi, use `/session` for session totals. Read context usage from its footer.
 Record only context indicators, never the displayed session path.
 
-From 70% context usage, use the `handoff` skill.
+At 70% context or 250k tokens, whichever comes first, use the `handoff` skill.
 
 ## Stop and close workers
 
