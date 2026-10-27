@@ -43,7 +43,7 @@ Helper reference:
 
 ```sh
 crew-nodes spawn \
-  --name reviewer --cli claude --cwd "$PWD" --task review [-- ARGS...]
+  --name reviewer --cli CLI --cwd "$PWD" --task review [-- ARGS...]
 ```
 
 `--task` takes a short label, such as `review`. It identifies the task in

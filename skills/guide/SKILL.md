@@ -17,7 +17,7 @@ roles use tabs. Explain where Kitty opened the guide and how to reveal it with
 
 Write a brief at `$CREW_RUNS/<task>/guide/brief.md` with the topic, current
 work, relevant files, approximate level and concrete questions. Launch one
-`guide` node with `crew-nodes spawn --name guide --cli claude --cwd DIR
+`guide` node with `crew-nodes spawn --name guide --cli CLI --cwd DIR
 --task TASK --split`. Pass CLI arguments, such as a model flag, after `--`
 only when the human asks.
 
