@@ -27,9 +27,9 @@ crew-nodes type 123 --enter <<'INPUT'
 /clear
 INPUT
 crew-nodes ack 550e8400-e29b-41d4-a716-446655440000
-crew-nodes spawn --name reviewer --cli claude \
+crew-nodes spawn --name reviewer --cli CLI \
   --cwd /path/to/repository --task example
-crew-nodes spawn --name guide --cli claude \
+crew-nodes spawn --name guide --cli CLI \
   --cwd /path/to/repository --task example --split
 crew-nodes interrupt 456
 crew-nodes close 456
