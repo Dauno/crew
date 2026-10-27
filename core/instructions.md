@@ -97,6 +97,7 @@ acknowledgement rules and human instructions take precedence.
   first; keep rolling checkpoints.
 - `coordinate`: orchestrate milestones and deliveries from approved scope.
 - `explore`: ask a read-only task explorer a question, or work as explorer.
+- `guide`: help the human understand a topic, decision, diff or crew itself.
 
 ## Session details
 

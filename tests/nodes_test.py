@@ -1275,9 +1275,14 @@ class NodesTest(unittest.TestCase):
         self.assertLessEqual(before, int(started_values[0]))
         self.assertLessEqual(int(started_values[0]), after)
         self.assertEqual(
-            args[:5],
-            ["@", "--to", "unix:/tmp/crew-test.sock", "launch", "--type=tab"],
+            args[:6],
+            ["@", "--to", "unix:/tmp/crew-test.sock", "launch",
+             "--keep-focus", "--copy-env"],
         )
+        self.assertIn("--type=tab", args)
+        for value in ("--type=window", "--match", "--next-to",
+                      "--location=vsplit", "--title"):
+            self.assertNotIn(value, args)
         for value in (
             "--keep-focus",
             "--copy-env",
@@ -1319,6 +1324,23 @@ class NodesTest(unittest.TestCase):
         self.assertEqual(metadata["task"], "crew-v1")
         self.assertFalse(self.calls()[-1]["hyprland_set"])
         self.assertFalse(self.calls()[-1]["runtime_set"])
+
+    def test_spawn_split_uses_window_anchored_to_caller(self):
+        result = self.run_helper(
+            "spawn", "--name", "guide", "--cli", "claude",
+            "--cwd", str(self.work), "--split",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.calls()[-1]["args"]
+        for value in (
+            "--type=window", "--match", "window_id:7",
+            "--next-to", "id:7", "--location=vsplit",
+            "--title", "guide · claude",
+        ):
+            self.assertIn(value, args)
+        self.assertNotIn("--type=tab", args)
+        self.assertNotIn("--tab-title", args)
+        self.assertIn("CREW_PARENT=7", args)
 
     def test_spawn_passes_cli_args_in_order_without_splitting(self):
         result = self.run_helper(

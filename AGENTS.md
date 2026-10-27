@@ -21,6 +21,7 @@ readable, so commit nothing private.
 - `claude/`: the Claude Code adapter, a plugin that carries the skills.
 - `skills/nodes/`: Kitty messaging between agents, with `scripts/nodes.sh`.
   The package installs it on the PATH as `crew-nodes`.
+- `skills/guide/`: explain topics, decisions, diffs and crew itself.
 - `skills/plan/`: verify requests and agree on scope before orchestration.
 - `skills/implement/`: make and verify requested code changes.
 - `skills/review/`: inspect changes and report concrete findings.
@@ -113,8 +114,9 @@ crew-nodes <command>
   type ID --enter-only     type only Return; read no input
   ack MESSAGE_ID           acknowledge a message in this session's inbox
   notify STATUS REPORT     publish a worker notice to its parent
-  spawn --name N --cli claude|codex|pi --cwd DIR [--task T] [-- ARGS...]
-                           open a worker tab; print its window ID
+  spawn --name N --cli claude|codex|pi --cwd DIR [--task T] [--split]
+       [-- ARGS...]
+                           open a worker tab or split window; print its ID
   interrupt ID             send Escape to a worker window
   close ID                 close a worker window
 ```
@@ -199,12 +201,15 @@ file format.
 Metrics hold numbers and identifiers, never prompts, code or output. They
 stay on the machine with the rest of `$CREW_HOME`. A metrics failure never
 blocks a notice: the summary then says `metrics unavailable`.
-`spawn` runs `kitten @ launch --type=tab --keep-focus --copy-env`.
-It titles the tab `<name> · <cli>`.
+`spawn` runs `kitten @ launch --type=tab --keep-focus --copy-env` by default.
+With `--split`, it anchors `--type=window` to the caller's tab and window,
+uses `--location=vsplit` and titles and labels the window. Focus stays on the
+caller. This respects Kitty's layout and does not change configuration.
+It titles the tab or window `<name> · <cli>`.
 It sets `CREW_ROLE=worker`, `CREW_NODE`, `CREW_TASK`, `CREW_PARENT`,
-`CREW_SESSION_ID` and `CREW_INBOX`. It labels the tab with `crew_node`,
-`crew_cli`, `crew_role`, `crew_task`, `crew_parent`, `crew_session` and
-`crew_native` user variables, then runs `"$CREW_BIN" <cli>`.
+`CREW_SESSION_ID` and `CREW_INBOX`. It labels the tab or window with
+`crew_node`, `crew_cli`, `crew_role`, `crew_task`, `crew_parent`,
+`crew_session` and `crew_native` user variables. It runs `"$CREW_BIN" <cli>`.
 Arguments after `--` go to that CLI unchanged, for example a model flag.
 Agents pass them only when the human asks; by default workers get none.
 
