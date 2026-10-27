@@ -214,8 +214,9 @@ Each task keeps `brief.md`, `deliveries.md`, handoffs and reports in
 `$CREW_RUNS/<task>/`. `deliveries.md` tracks each milestone's deliverable,
 done criteria, roles and models, execution mode, status and PR. Parallel
 writers use separate branches and worktrees at
-`$CREW_RUNS/<task>/worktrees/<milestone>`. The coordinator removes each
-worktree after merge.
+`$CREW_RUNS/<task>/worktrees/<milestone>`. The coordinator creates them.
+The session that synchronizes `main` after the merge removes each worktree
+with `git worktree remove`.
 
 A notice is one line:
 `<task>/<node>: <status>. Report: <path>. Metrics: <summary>`.
