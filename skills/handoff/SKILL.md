@@ -27,8 +27,9 @@ Hand off sooner when the coordinator or human asks.
    checkpoint, set `<n>` to 1; later checkpoints overwrite the latest file.
    For a handoff to a new agent, use one higher than the largest existing
    number for that node, starting at 1.
-3. Notify the parent with the path. Workers use `crew-nodes notify`. The
-   coordinator tells the human, who starts a fresh session with that path.
+3. Notify the parent with the path. Workers use `crew-nodes notify` with
+   status `partial` when assigned work remains. The coordinator tells the
+   human, who starts a fresh session with that path.
 4. Stay idle and edit nothing after notifying.
 
 Include pointers, not copied contents:
