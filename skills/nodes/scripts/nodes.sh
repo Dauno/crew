@@ -565,6 +565,7 @@ record_metrics() {
 
 notify_parent() {
   local status=${1:-} report=${2:-} parent message destination script
+  local message_id
   [[ $# -eq 2 ]] || usage
   [[ -n $status ]] || die 'notify STATUS must not be empty.'
   [[ -n ${CREW_TASK:-} ]] || die 'notify requires CREW_TASK.'
@@ -580,10 +581,13 @@ notify_parent() {
   message="$CREW_TASK/$CREW_NODE: $status. Report: $report. Metrics: $metrics"
   destination=$(native_target_session "$parent")
   script=$(mailbox_script)
-  if ! printf '%s' "$message" | python3 "$script" publish --to "$destination" \
-    >/dev/null; then
+  if ! message_id=$(printf '%s' "$message" |
+    python3 "$script" publish --to "$destination"); then
     die "could not store notice for parent Kitty window $parent."
   fi
+  printf '%s message=%s recipient_session=%s recipient_window=%s\n' \
+    'stored as pending; delivery, acknowledgement and reading unconfirmed;' \
+    "$message_id" "$destination" "$parent"
 }
 
 spawn_node() {

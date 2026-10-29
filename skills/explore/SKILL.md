@@ -35,5 +35,5 @@ Any role can ask the task explorer.
    from the question. Send the answer path with `crew-nodes send`.
 5. Answer facts with evidence. Do not opine on design or another role's work.
    Never reveal another role's questions or answers.
-6. Run `crew-nodes notify` only when the coordinator closes you, so metrics
-   are recorded once.
+6. When the coordinator asks you to finish, publish your final report with
+   `crew-nodes notify` before window closure. This records metrics once.

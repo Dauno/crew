@@ -964,6 +964,13 @@ class NodesTest(unittest.TestCase):
         self.assertEqual(len(pending), 1)
         message = json.loads(pending[0].read_text(encoding="utf-8"))
         self.assertEqual(set(message), {"id", "from", "text"})
+        self.assertEqual(
+            result.stdout,
+            "stored as pending; delivery, acknowledgement and reading "
+            f"unconfirmed; message={message['id']} "
+            f"recipient_session={self.parent_session} recipient_window=7\n",
+        )
+        self.assertEqual(pending[0].stem, message["id"])
         self.assertEqual(message["from"], self.worker_session)
         self.assertEqual(
             message["text"],
@@ -988,6 +995,70 @@ class NodesTest(unittest.TestCase):
         ack = self.run_helper("ack", message["id"], env=parent_env)
         self.assertEqual(ack.returncode, 0, ack.stderr)
         self.assertTrue((parent_inbox / "received" / pending[0].name).is_file())
+
+    def test_notify_preserves_partial_blocked_and_custom_statuses(self):
+        report = self.root / "report.md"
+        report.write_text("remaining work\n", encoding="utf-8")
+        self.install_metrics(
+            "#!/usr/bin/env bash\n"
+            "printf '%s\\n' \"$*\" >>\"$FAKE_METRICS_LOG\"\n"
+            "printf '%s\\n' 'input=12 output=3'\n"
+        )
+        statuses = ("partial", "blocked", "awaiting review")
+        parent_inbox = self.crew_home / "mailboxes" / self.parent_session
+        for status in statuses:
+            with self.subTest(status=status):
+                result = self.run_helper(
+                    "notify", status, str(report),
+                    env=self.notify_environment(),
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+        notices = [
+            json.loads(path.read_text(encoding="utf-8"))["text"]
+            for path in (parent_inbox / "pending").glob("*.json")
+        ]
+        self.assertCountEqual(notices, [
+            f"crew-v1/worker: {status}. Report: {report}. "
+            "Metrics: input=12 output=3"
+            for status in statuses
+        ])
+        self.assertEqual(
+            (self.root / "metrics.jsonl").read_text(encoding="utf-8"),
+            "".join(
+                f"record --status {status} --report {report}\n"
+                for status in statuses
+            ),
+        )
+
+    def test_notify_publication_failure_has_no_success_confirmation(self):
+        report = self.root / "report.md"
+        report.write_text("completed\n", encoding="utf-8")
+        self.install_metrics(
+            "#!/usr/bin/env bash\n"
+            "printf '%s\\n' \"$*\" >>\"$FAKE_METRICS_LOG\"\n"
+            "printf '%s\\n' 'input=12 output=3'\n"
+        )
+        parent_inbox = self.crew_home / "mailboxes" / self.parent_session
+        parent_inbox.write_text("not a mailbox directory\n", encoding="utf-8")
+        result = self.run_helper(
+            "notify", "done", str(report), env=self.notify_environment()
+        )
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertIn(
+            "could not store notice for parent Kitty window 7", result.stderr
+        )
+        self.assertEqual(
+            (self.root / "metrics.jsonl").read_text(encoding="utf-8"),
+            f"record --status done --report {report}\n",
+        )
+        self.assertEqual(
+            parent_inbox.read_text(encoding="utf-8"),
+            "not a mailbox directory\n",
+        )
+        self.assertFalse(
+            any("send-text" in call["args"] for call in self.calls())
+        )
 
     def test_notify_uses_unavailable_when_metrics_are_missing(self):
         report = self.root / "report.md"

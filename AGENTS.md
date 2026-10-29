@@ -143,8 +143,13 @@ processing.
 `notify` needs `CREW_TASK`, `CREW_NODE` and `CREW_PARENT`. It records the
 worker's metrics once, then publishes this existing notice text natively:
 `<task>/<node>: <STATUS>. Report: <REPORT>. Metrics: <summary>`.
-A successful notice only confirms storage. It does not wait for or simulate
-an empty parent editor.
+Use `done` for complete assigned scope, including required review; use
+`partial` for an incomplete delivery or handoff and `blocked` when work cannot
+continue. Reports identify remaining work or the action needed to unblock it.
+Any nonempty custom status remains valid.
+On success, `notify` prints the published message ID, recipient session and
+Kitty window. This confirms storage as pending, not delivery, acknowledgement
+or reading. It does not wait for or simulate an empty parent editor.
 `spawn` also sets `CREW_STARTED_AT` to the Unix time of the launch.
 
 ### Native message delivery

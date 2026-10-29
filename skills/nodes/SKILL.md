@@ -38,12 +38,23 @@ crew-nodes close 456
 Workers send their one-line notice to their parent with `notify`:
 
 ```bash
-crew-nodes notify done /path/to/report.md
+crew-nodes notify STATUS /path/to/report.md
 ```
 
+Choose the status for the assigned scope:
+
+- `done`: all assigned work is complete, including required review. Finishing
+  a partial step does not complete the task.
+- `partial`: the delivery or handoff is incomplete. State the remaining work
+  in the report.
+- `blocked`: work cannot continue. State the action needed to unblock it.
+
+These are conventions, not an enum. Any nonempty custom status remains valid.
 The helper records one metrics line and publishes the existing notice text
 through the parent's native mailbox. Metrics stay in
-`$CREW_HOME/metrics.jsonl`. The command succeeds after storage, not receipt.
+`$CREW_HOME/metrics.jsonl`. On success, it prints the published message ID,
+recipient session and Kitty window. This confirms storage as pending, not
+confirmed delivery, acknowledgement or reading.
 
 `send ID` stores text in the session labeled by that Kitty window ID.
 It does not inspect or type into the target editor. Use `type ID` only for
@@ -117,8 +128,12 @@ crew-nodes read 456 screen
 
 Keep each brief and report in `$CREW_RUNS/<task>/`. A brief names the skill
 for each role: `plan`, `implement`, `review`, `git`, `coordinate` or
-`explore`. Each request must specify how to return its result: a report path
-and `notify`, or a short native answer using `send`.
+`explore`. Each request must name its expected result, recipient and return
+method, including for intermediate phases. Use a report path and `notify`, or
+a short native answer using `send`.
+Before waiting for a later phase, return the intermediate result natively to
+whoever must continue. A short `send` with its path suffices; it does not mean
+`done` for the whole task.
 Use one-line notices in this format:
 `<task>/<node>: <status>. Report: <path>`. The coordinator writes memory.
 Workers propose memory entries in their reports.
@@ -159,7 +174,14 @@ it before sending a task-specific stop message. Ask for a visible
 acknowledgement and verify the window is idle. Do not assume that Escape
 stopped a handoff.
 
-When the work is complete, close the CLI normally. Claude Code accepts
+Before closing a worker, receive its final native notification and review
+remaining work, required review and unanswered requests. Resolve or explicitly
+hand off pending work and replies. A report file alone proves neither a
+completion notice nor inactivity. A completed partial step does not complete
+the assigned task. Inspect the screen and confirm the worker is idle before
+starting shutdown.
+
+Once these checks pass, close the CLI normally. Claude Code accepts
 `/exit`. Codex accepts `/quit`. Check `list` once after sending the command.
 If an idle worker shell remains, close its ID with the helper. The helper
 closes only windows labeled `crew_role=worker`.
@@ -181,5 +203,7 @@ Pass CLI arguments after `--` only when the human requests a model or option.
 By default, each worker uses its CLI's default model. A brief alone does not
 change a model; pass the requested model in the `spawn` command.
 
-After a task, write a report with completed work, checks, limits and
-unresolved decisions. Then run `crew-nodes notify done /path/to/report.md`.
+After a delivery, write a report with completed work, checks, limits and
+unresolved decisions. Run `crew-nodes notify STATUS /path/to/report.md` with
+the matching status above. For an unfinished handoff, use `partial`, not
+`done`.

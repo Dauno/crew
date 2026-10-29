@@ -67,7 +67,13 @@ matches that Pi session. This records persisted incorporation, not model
 reading or task completion. Manual Pi acknowledgements remain supported.
 Acknowledgements do not promise exactly-once work.
 `notify STATUS REPORT` uses the same mailbox and keeps its current notice text
-and one metrics record per call.
+and one metrics record per call. On success, it prints the published message
+ID, recipient session and Kitty window. This confirms storage as pending, not
+delivery, acknowledgement or reading.
+Use `done` only for complete assigned scope, including required review.
+Use `partial` for incomplete deliveries or handoffs and `blocked` when work
+cannot continue. Reports explain remaining work or the needed action.
+Any nonempty custom status remains valid.
 
 Use `crew-nodes type ID [--enter]` only for deliberate terminal input.
 Native task messages never fall back to `type`. Pending messages stay with

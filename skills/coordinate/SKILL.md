@@ -42,15 +42,17 @@ final objective gate or independently judge implementation quality.
    usage limit appeared.
 7. Write `$CREW_RUNS/<task>/brief.md`. Include the goal, exact decision
    quotes, approved contract changes, rules, report paths and each role's
-   skill.
+   skill. Specify each delegated phase's result, recipient and native return
+   method. Do not rely on silently created shared files to resume work.
 8. Parallel writers each use a separate branch and worktree at
    `$CREW_RUNS/<task>/worktrees/<milestone>`. The coordinator creates them.
    The session that synchronizes `main` after the merge removes each worktree
    with `git worktree remove`. Read-only roles use their milestone's worktree.
 9. For tasks that need research, start one explorer before other roles.
-   Omit it for small, well-scoped tasks. Include its window in every brief
-   and close it at task end. At 70% context or 250k tokens, whichever comes
-   first, replace it with `handoff` and tell the roles its new window.
+   Omit it for small, well-scoped tasks. Include its window in every brief.
+   At task end, ask it to publish its final notification before closing it.
+   At 70% context or 250k tokens, whichever comes first, replace it with
+   `handoff` and tell the roles its new window.
 10. A Claude Code worker in a new worktree opens a project trust dialog.
     The coordinator makes that window visible and asks the human to answer.
     Agents never answer trust dialogs.
@@ -78,7 +80,12 @@ final objective gate or independently judge implementation quality.
 7. Update the rolling handoff at each milestone or iteration end. Apply this
    rule to the human session too, and suggest a fresh session at each
    milestone end.
-8. Close each node when its part is done.
+8. Before closing a node, receive its final native notification and check the
+   assigned scope, required review, remaining work and unanswered requests.
+   Resolve or explicitly hand off pending work and replies.
+   A report file alone proves neither a completion notice nor inactivity.
+   A completed partial step does not complete the assigned task.
+   Inspect its screen and confirm inactivity, then follow `nodes` to close it.
 
 ## Final objective gate
 
