@@ -23,7 +23,7 @@ SENDER = "11111111-1111-4111-8111-111111111111"
 RECIPIENT = "22222222-2222-4222-8222-222222222222"
 
 JS_SETUP = r'''import {
-  appendFileSync, readFileSync, writeFileSync,
+  appendFileSync, readFileSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -133,6 +133,11 @@ const isReceived = (messageId) => {
     throw error;
   }
 };
+const publishSynthetic = (id) => {
+  writeFileSync(`${process.env.CREW_INBOX}/pending/${id}.json`, JSON.stringify({
+    id, from: "11111111-1111-4111-8111-111111111111", text: "synthetic",
+  }));
+};
 const markerId = () => JSON.parse(readFileSync(
   `${process.env.CREW_INBOX}/.delivery.json`, "utf8",
 )).id;
@@ -149,6 +154,7 @@ class PiExtensionLifecycleTest(unittest.TestCase):
     def runtime(
         self, count=1, fail_first_send=False, *, new_session=False,
         fail_sends=None, fail_acks=0, delay_ack_ms=0, delay_claim_ms=0,
+        fail_claims=0, delay_claim_result_ms=0, restore_ack_signal=False,
     ):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -160,10 +166,13 @@ class PiExtensionLifecycleTest(unittest.TestCase):
         tools.mkdir()
         crew_nodes = tools / "crew-nodes"
         ack_counter = base / "ack-count"
+        claim_counter = base / "claim-count"
         crew_nodes.write_text(
             f"#!{sys.executable}\n"
             "import os, pathlib, subprocess, sys, time\n"
             "if sys.argv[1:2] == ['ack']:\n"
+            "  signal = pathlib.Path(os.environ['CREW_INBOX']) / 'signal'\n"
+            "  old_signal = signal.read_bytes()\n"
             "  counter = pathlib.Path(os.environ['CREW_ACK_COUNTER'])\n"
             "  try: attempts = int(counter.read_text())\n"
             "  except FileNotFoundError: attempts = 0\n"
@@ -172,6 +181,12 @@ class PiExtensionLifecycleTest(unittest.TestCase):
             "  if attempts <= int(os.environ.get('CREW_FAIL_ACKS', '0')):\n"
             "    raise SystemExit(7)\n"
             "if sys.argv[1:3] == ['_mailbox', 'claim']:\n"
+            "  counter = pathlib.Path(os.environ['CREW_CLAIM_COUNTER'])\n"
+            "  try: attempts = int(counter.read_text())\n"
+            "  except FileNotFoundError: attempts = 0\n"
+            "  counter.write_text(str(attempts + 1))\n"
+            "  if attempts < int(os.environ.get('CREW_FAIL_CLAIMS', '0')):\n"
+            "    raise SystemExit(7)\n"
             "  delay_ms = int(os.environ.get('CREW_DELAY_CLAIM_MS', '0'))\n"
             "  time.sleep(delay_ms / 1000)\n"
             "result = subprocess.run(\n"
@@ -179,7 +194,12 @@ class PiExtensionLifecycleTest(unittest.TestCase):
             f"    {str(ROOT / 'bin/crew-nodes')!r}, *sys.argv[1:]],\n"
             "  check=False,\n"
             ")\n"
+            "if sys.argv[1:3] == ['_mailbox', 'claim']:\n"
+            "  pathlib.Path(os.environ['CREW_CLAIM_DONE']).write_text('done')\n"
+            "  time.sleep(int(os.environ.get('CREW_DELAY_CLAIM_RESULT_MS', '0')) / 1000)\n"
             "if sys.argv[1:2] == ['ack']:\n"
+            "  if os.environ.get('CREW_RESTORE_ACK_SIGNAL') == '1':\n"
+            "    signal.write_bytes(old_signal)\n"
             "  delay_ms = int(os.environ.get('CREW_DELAY_ACK_MS', '0'))\n"
             "  time.sleep(delay_ms / 1000)\n"
             "raise SystemExit(result.returncode)\n"
@@ -207,15 +227,21 @@ class PiExtensionLifecycleTest(unittest.TestCase):
             "CREW_INBOX": str(receiver),
             "CREW_CLI": "pi",
             "CREW_NODES_SCRIPT": str(ROOT / "skills/nodes/scripts/nodes.sh"),
-            "CREW_EXTENSION_PATH": str(
-                ROOT / "skills/nodes/extensions/crew-messages.ts"
+            "CREW_EXTENSION_PATH": os.environ.get(
+                "CREW_TEST_EXTENSION",
+                str(ROOT / "skills/nodes/extensions/crew-messages.ts"),
             ),
             "CREW_MESSAGE_IDS": json.dumps(ids),
             "CREW_FAIL_SENDS": str(fail_sends),
             "CREW_FAIL_ACKS": str(fail_acks),
             "CREW_DELAY_ACK_MS": str(delay_ack_ms),
             "CREW_DELAY_CLAIM_MS": str(delay_claim_ms),
+            "CREW_DELAY_CLAIM_RESULT_MS": str(delay_claim_result_ms),
+            "CREW_FAIL_CLAIMS": str(fail_claims),
+            "CREW_RESTORE_ACK_SIGNAL": "1" if restore_ack_signal else "0",
+            "CREW_CLAIM_DONE": str(base / "claim-done"),
             "CREW_ACK_COUNTER": str(ack_counter),
+            "CREW_CLAIM_COUNTER": str(claim_counter),
             "CREW_PI_SESSION_DIR": str(pi_session_dir),
             "CREW_PI_SESSION_FILE": str(pi_session_dir / "session.jsonl"),
             "CREW_PI_SESSION_ID": pi_session_id,
@@ -244,6 +270,78 @@ class PiExtensionLifecycleTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout
+
+    def test_unchanged_idle_signal_avoids_repeated_claims(self):
+        runtime = self.runtime(count=0)
+        self.run_script(runtime, r'''await delay(2_200);
+const attempts = Number(readFileSync(process.env.CREW_CLAIM_COUNTER, "utf8"));
+if (attempts !== 1) throw new Error(`expected one initial claim, got ${attempts}`);
+await handlers.session_shutdown();
+''')
+
+    def test_failed_claim_retries_without_signal_change(self):
+        runtime = self.runtime(fail_claims=1)
+        self.run_script(runtime, r'''await waitFor(
+  () => sent.length === 1, "failed claim did not retry", 32,
+);
+await handlers.session_shutdown();
+''')
+
+    def test_missing_signal_uses_periodic_fallback(self):
+        runtime = self.runtime(count=0)
+        self.run_script(runtime, r'''await delay(1_200);
+unlinkSync(`${process.env.CREW_INBOX}/signal`);
+const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+publishSynthetic(id);
+await waitFor(() => sent.length === 1, "fallback missed message", 52);
+if (!sent[0].message.content.includes(id)) throw new Error("wrong message");
+await handlers.session_shutdown();
+''')
+
+    def test_unchanged_signal_uses_periodic_fallback(self):
+        runtime = self.runtime(count=0)
+        self.run_script(runtime, r'''await delay(1_200);
+const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+publishSynthetic(id);
+await waitFor(() => sent.length === 1, "fallback missed message", 52);
+if (!sent[0].message.content.includes(id)) throw new Error("wrong message");
+await handlers.session_shutdown();
+''')
+
+    def test_ack_claims_next_even_when_signal_does_not_change(self):
+        runtime = self.runtime(count=2, restore_ack_signal=True)
+        self.run_script(runtime, r'''await waitFor(
+  () => sent.length === 1, "first message was not delivered",
+);
+await completeMessageEnd(0);
+await waitFor(() => sent.length === 2, "next claim waited for fallback", 16);
+await handlers.session_shutdown();
+''')
+
+    def test_fallback_uses_monotonic_time_after_wall_clock_moves_back(self):
+        runtime = self.runtime(count=0)
+        self.run_script(runtime, r'''await delay(1_200);
+const originalNow = Date.now;
+Date.now = () => originalNow() - 60_000;
+const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+publishSynthetic(id);
+await waitFor(() => sent.length === 1, "clock change blocked fallback", 52);
+Date.now = originalNow;
+await handlers.session_shutdown();
+''')
+
+    def test_signal_change_during_claim_is_not_lost(self):
+        runtime = self.runtime(count=0, delay_claim_result_ms=1_500)
+        self.run_script(runtime, r'''await waitFor(() => {
+  try { readFileSync(process.env.CREW_CLAIM_DONE); return true; }
+  catch (error) { if (error.code === "ENOENT") return false; throw error; }
+}, "initial claim did not finish");
+const id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+publishSynthetic(id);
+writeFileSync(`${process.env.CREW_INBOX}/signal`, "new identifier\n");
+await waitFor(() => sent.length === 1, "changed signal was lost", 32);
+await handlers.session_shutdown();
+''')
 
     def test_busy_agent_receives_one_steer_without_periodic_resends(self):
         runtime = self.runtime()
