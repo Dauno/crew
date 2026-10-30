@@ -32,6 +32,8 @@ interface ReceiverRuntime {
   compacting: boolean;
   runActive: boolean;
   polling: boolean;
+  lastSignal?: string;
+  lastClaimAt?: number;
   claimedMessage?: CrewMessage;
   inFlightMessageId?: string;
   candidate?: CrewMessage;
@@ -44,6 +46,7 @@ interface ReceiverRuntime {
 }
 
 const POLL_INTERVAL_MS = 500;
+const FULL_QUERY_INTERVAL_MS = 5_000;
 const DISPATCH_RETRY_MS = 1_000;
 const ACK_RETRY_MS = 500;
 const MAX_DISPATCH_ATTEMPTS = 3;
@@ -96,6 +99,8 @@ export default function (pi: ExtensionAPI) {
 
   const clearClaim = (owner: ReceiverRuntime) => {
     owner.claimedMessage = undefined;
+    // A held delivery can hide queued messages even without a new signal.
+    owner.lastClaimAt = undefined;
     owner.inFlightMessageId = undefined;
     owner.candidate = undefined;
     owner.dispatchAttempts = 0;
@@ -263,6 +268,22 @@ export default function (pi: ExtensionAPI) {
       }
     }
 
+    let signal: string | undefined;
+    try {
+      if (owner.inbox) {
+        signal = readFileSync(join(owner.inbox, "signal"), "utf8").trim() ||
+          undefined;
+      }
+    } catch {
+      // Signal is only a hint; the periodic full query recovers failures.
+    }
+    const queryDue = owner.lastClaimAt === undefined ||
+      performance.now() - owner.lastClaimAt >= FULL_QUERY_INTERVAL_MS;
+    if (!queryDue && (signal === undefined || signal === owner.lastSignal)) {
+      schedule(owner);
+      return;
+    }
+
     owner.polling = true;
     execFile("crew-nodes", ["_mailbox", "claim"], {
       encoding: "utf8",
@@ -272,10 +293,15 @@ export default function (pi: ExtensionAPI) {
       owner.polling = false;
       if (!isSamePiSession(owner)) return;
       if (error) {
+        owner.lastClaimAt = undefined;
         console.error(
           "crew Pi receiver could not claim a mailbox message",
           error,
         );
+      } else {
+        // Retain the pre-claim signal so concurrent changes remain visible.
+        owner.lastSignal = signal;
+        owner.lastClaimAt = performance.now();
       }
       if (!error && stdout.trim()) {
         try {
@@ -291,8 +317,11 @@ export default function (pi: ExtensionAPI) {
             owner.ackRetryAt = 0;
             owner.ackInFlight = false;
             dispatchClaimed(owner);
+          } else {
+            owner.lastClaimAt = undefined;
           }
         } catch (parseError) {
+          owner.lastClaimAt = undefined;
           console.error(
             "crew Pi receiver could not parse a mailbox message",
             parseError,
