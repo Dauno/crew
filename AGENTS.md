@@ -219,6 +219,7 @@ uses `--location=vsplit` and titles and labels the window. Focus stays on the
 caller. This respects Kitty's layout and does not change configuration.
 It titles the tab or window `<name> · <cli>`.
 It sets `CREW_ROLE=worker`, `CREW_NODE`, `CREW_TASK`, `CREW_PARENT`,
+It adds `--match window_id:ID` and `--source-window id:ID` for the caller.
 `CREW_SESSION_ID` and `CREW_INBOX`. It labels the tab or window with
 `crew_node`, `crew_cli`, `crew_role`, `crew_task`, `crew_parent`,
 `crew_session` and `crew_native` user variables. It runs `"$CREW_BIN" <cli>`.

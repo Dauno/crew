@@ -1520,7 +1520,9 @@ class NodesTest(unittest.TestCase):
              "--keep-focus", "--copy-env"],
         )
         self.assertIn("--type=tab", args)
-        for value in ("--type=window", "--match", "--next-to",
+        self.assertEqual(args[args.index("--match") + 1], "window_id:7")
+        self.assertEqual(args[args.index("--source-window") + 1], "id:7")
+        for value in ("--type=window", "--next-to",
                       "--location=vsplit", "--title"):
             self.assertNotIn(value, args)
         for value in (
@@ -1567,6 +1569,18 @@ class NodesTest(unittest.TestCase):
 
     def test_spawn_split_uses_window_anchored_to_caller(self):
         result = self.run_helper(
+    def test_spawn_tab_uses_inferred_parent(self):
+        env = self.notify_environment()
+        env.pop("KITTY_WINDOW_ID")
+        result = self.run_helper(
+            "spawn", "--name", "worker", "--cli", "pi", "--cwd",
+            str(self.work), env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.calls()[-1]["args"]
+        self.assertEqual(args[args.index("--match") + 1], "window_id:8")
+        self.assertEqual(args[args.index("--source-window") + 1], "id:8")
+
             "spawn", "--name", "guide", "--cli", "claude",
             "--cwd", str(self.work), "--split",
         )

@@ -201,8 +201,9 @@ draft, so inspect the screen before sending a stop command.
 `spawn` requires `CREW_BIN` and a resolvable Kitty window. It uses a positive
 `KITTY_WINDOW_ID`, or the single window labeled with `CREW_SESSION_ID` when
 that ID is unavailable. It fails when neither resolves the window.
-It creates a worker
-tab with a fresh `CREW_SESSION_ID`, `CREW_INBOX`, task labels and parent ID.
+It creates a worker tab with a fresh `CREW_SESSION_ID`, `CREW_INBOX`, task
+labels and parent ID. Tab mode anchors placement and environment copying to
+the caller with `--match window_id:ID` and `--source-window id:ID`.
 It prints the new window ID. Keep the worker's task, repository and report
 path explicit in its brief. Use `spawn --split` for the guide role by default.
 It opens a window next to the caller in the current tab. It respects Kitty's

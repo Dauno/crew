@@ -695,7 +695,8 @@ spawn_node() {
       --next-to "id:$parent" --location=vsplit
       --title "$name · $cli")
   else
-    launch_args+=(--type=tab --tab-title "$name · $cli")
+    launch_args+=(--type=tab --match "window_id:$parent"
+      --source-window "id:$parent" --tab-title "$name · $cli")
   fi
   if ! reply=$(kitty_remote "${launch_args[@]}" \
     --cwd "$cwd" \

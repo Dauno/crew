@@ -35,9 +35,14 @@ parent_id=''
 node_id=''
 extra_tab_id=''
 split_id=''
+other_os_id=''
+placed_id=''
 cleanup() {
   local status=$?
   trap - EXIT
+  if [[ -n $placed_id ]]; then
+    crew-nodes close "$placed_id" >/dev/null 2>&1 || true
+  fi
   if [[ -n $split_id ]]; then
     crew-nodes close "$split_id" >/dev/null 2>&1 || true
   fi
@@ -153,6 +158,24 @@ grep -Fq "$human_input" <<<"$parent_transcript" || {
 
 export CREW_BIN=$tmp/crew-fake
 export CREW_TASK=live-test
+other_os_id=$(kitten @ --to "$listen_on" launch --type=os-window \
+  --cwd "$tmp" "$tmp/parent.sh")
+kitten @ --to "$listen_on" focus-window --match "id:$other_os_id"
+placed_id=$(CREW_BIN="$tmp/parent.sh" crew-nodes spawn \
+  --name placement --cli claude \
+  --cwd "$tmp" --task live-test)
+kitten @ --to "$listen_on" ls >"$tmp/placement.json"
+jq -e --argjson parent "$parent_id" --argjson worker "$placed_id" \
+  'any(.[]; any(.tabs[].windows[]; .id == $parent) and
+    any(.tabs[].windows[]; .id == $worker))' \
+  "$tmp/placement.json" >/dev/null || {
+  printf 'nodes-live: tab did not land in caller OS window.\n' >&2
+  exit 1
+}
+crew-nodes close "$placed_id"
+placed_id=''
+kitten @ --to "$listen_on" close-window --match "id:$other_os_id"
+other_os_id=''
 node_id=$(crew-nodes spawn --name live-test --cli claude \
   --cwd "$tmp" --task live-test)
 [[ $node_id =~ ^[1-9][0-9]*$ ]] || {
