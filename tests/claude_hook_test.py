@@ -72,7 +72,9 @@ class ClaudeHookTest(unittest.TestCase):
         hook_output = output["hookSpecificOutput"]
         self.assertEqual(hook_output["hookEventName"], "SessionStart")
         self.assertEqual(hook_output["watchPaths"], [str(self.inbox / "signal")])
-        self.assertIn(message_id, hook_output["additionalContext"])
+        self.assertTrue(hook_output["additionalContext"].endswith(
+            f"Acknowledge now: crew-nodes ack {message_id}"
+        ))
         self.assertTrue((self.inbox / "pending" / f"{message_id}.json").is_file())
         self.assertFalse((self.inbox / "received" / f"{message_id}.json").exists())
 
@@ -89,6 +91,9 @@ class ClaudeHookTest(unittest.TestCase):
         self.assertIn(first, result.stderr)
         self.assertIn(SENDER, result.stderr)
         self.assertIn("first line\nsecond line", result.stderr)
+        self.assertTrue(result.stderr.endswith(
+            f"Acknowledge now: crew-nodes ack {first}\n"
+        ))
         self.assertFalse((self.inbox / "received" / f"{first}.json").exists())
 
         repeated = self.hook(event)

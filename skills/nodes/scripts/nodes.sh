@@ -32,6 +32,7 @@ require_runtime_tools() {
   done
 }
 
+readonly delivery_warning_seconds=60
 send_wait_seconds=60
 poll_interval=0.25
 if [[ ${CREW_NODES_TESTING:-0} == 1 ]]; then
@@ -160,7 +161,8 @@ list_windows() {
   script=$(mailbox_script)
   session_ids=$(jq -r '
     .[]?.tabs[]?.windows[]?
-    | select(.user_vars.crew_cli == "pi")
+    | select(.user_vars.crew_cli == "pi" or
+        .user_vars.crew_cli == "claude" or .user_vars.crew_cli == "codex")
     | .user_vars.crew_session // empty
     | select(type == "string" and length > 0)
   ' <<<"$listing" | sort -u)
@@ -187,7 +189,8 @@ list_windows() {
         vars: (($window.user_vars // {})
           | with_entries(select(.key | startswith("crew_")))),
         self: (($window.id | tostring) == $self)
-      } + (if $window.user_vars.crew_cli == "pi" then
+      } + (if (["pi", "claude", "codex"] |
+        index($window.user_vars.crew_cli)) != null then
         {delivery: (if ($window.user_vars.crew_session | type) == "string"
           then $deliveries[$window.user_vars.crew_session] // null
           else null end)}
@@ -477,8 +480,30 @@ send_and_enter() {
   kitty_send_text "$id" $'\r'
 }
 
+held_delivery() {
+  local destination=$1 script=$2 status
+  status=$(printf '%s\n' "$destination" |
+    python3 "$script" status --sessions 2>/dev/null) || return 0
+  jq -r --arg session "$destination" --argjson threshold \
+    "$delivery_warning_seconds" '
+    .[$session] | select(.age_seconds >= $threshold and
+      (.age_seconds | type) == "number" and (.id | type) == "string") |
+    "\(.id) \(.age_seconds)"
+  ' <<<"$status" 2>/dev/null || true
+}
+
+warn_held_delivery() {
+  local window=$1 held=$2 id age
+  [[ -n $held ]] || return 0
+  read -r id age <<<"$held"
+  printf '%s%s%s\n' \
+    "warning: Kitty window $window holds unacknowledged message $id " \
+    "for ${age}s; this message waits until that session runs " \
+    'crew-nodes ack.' >&2 || true
+}
+
 send_native() {
-  local id=${1:-} destination message_id script
+  local id=${1:-} destination message_id script held
   if [[ $# -eq 2 && ( $2 == --enter || $2 == --enter-only ) ]]; then
     die 'send no longer types into a terminal; use type ID [--enter] for explicit keyboard input.'
   fi
@@ -487,10 +512,12 @@ send_native() {
   refuse_self send "$id"
   destination=$(native_target_session "$id")
   script=$(mailbox_script)
+  held=$(held_delivery "$destination" "$script")
   if ! message_id=$(python3 "$script" publish --to "$destination"); then
     die "could not store message for Kitty window $id."
   fi
   printf 'stored as pending; recipient must acknowledge: %s\n' "$message_id"
+  warn_held_delivery "$id" "$held"
 }
 
 ack_message() {
@@ -565,7 +592,7 @@ record_metrics() {
 
 notify_parent() {
   local status=${1:-} report=${2:-} parent message destination script
-  local message_id
+  local message_id held
   [[ $# -eq 2 ]] || usage
   [[ -n $status ]] || die 'notify STATUS must not be empty.'
   [[ -n ${CREW_TASK:-} ]] || die 'notify requires CREW_TASK.'
@@ -581,6 +608,7 @@ notify_parent() {
   message="$CREW_TASK/$CREW_NODE: $status. Report: $report. Metrics: $metrics"
   destination=$(native_target_session "$parent")
   script=$(mailbox_script)
+  held=$(held_delivery "$destination" "$script")
   if ! message_id=$(printf '%s' "$message" |
     python3 "$script" publish --to "$destination"); then
     die "could not store notice for parent Kitty window $parent."
@@ -588,6 +616,7 @@ notify_parent() {
   printf '%s message=%s recipient_session=%s recipient_window=%s\n' \
     'stored as pending; delivery, acknowledgement and reading unconfirmed;' \
     "$message_id" "$destination" "$parent"
+  warn_held_delivery "$parent" "$held"
 }
 
 spawn_node() {

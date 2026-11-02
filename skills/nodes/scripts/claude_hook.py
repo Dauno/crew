@@ -25,7 +25,10 @@ def main() -> int:
                 "watchPaths": [str(signal)],
             }
             if message is not None:
-                output["additionalContext"] = format_for_agent(message)
+                output["additionalContext"] = (
+                    format_for_agent(message)
+                    + f"\nAcknowledge now: crew-nodes ack {message['id']}"
+                )
             print(json.dumps({"hookSpecificOutput": output}))
             return 0
         if event_name != "FileChanged":
@@ -38,7 +41,10 @@ def main() -> int:
         message = claim_next()
         if message is None:
             return 0
-        sys.stderr.write(format_for_agent(message) + "\n")
+        sys.stderr.write(
+            format_for_agent(message)
+            + f"\nAcknowledge now: crew-nodes ack {message['id']}\n"
+        )
         sys.stderr.flush()
         # asyncRewake turns this feedback into a system reminder, even when
         # Claude is idle. The agent, not the hook, acknowledges the message.

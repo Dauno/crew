@@ -150,6 +150,9 @@ Any nonempty custom status remains valid.
 On success, `notify` prints the published message ID, recipient session and
 Kitty window. This confirms storage as pending, not delivery, acknowledgement
 or reading. It does not wait for or simulate an empty parent editor.
+`send` and `notify` warn on stderr after publication when the destination
+holds an unacknowledged message for at least 60 seconds. A failed status
+lookup produces no warning and does not change the command result.
 `spawn` also sets `CREW_STARTED_AT` to the Unix time of the launch.
 
 ### Native message delivery
@@ -161,12 +164,12 @@ A private dispatch marker prevents repeated native injection before `ack`.
 
 Each receiver processes one message at a time. An acknowledgement validates
 `CREW_SESSION_ID`, moves that message into `received/` and permits the next
-message. Pi's `list` entry includes `delivery: null`, a held message ID and
-age in seconds, or `status: unavailable` if inspection fails. Unavailable does
-not mean received. Reading status never changes mailbox state, and holds never
-expire. If a receiver crashes after reserving delivery, crew does
-not inject the same message again automatically. The pending file remains for
-explicit reconciliation. New sessions never inherit pending files
+message. Claude, Codex and Pi `list` entries include `delivery: null`, a held
+message ID and age in seconds, or `status: unavailable` if inspection fails.
+Unavailable does not mean received. Reading status never changes mailbox
+state, and holds never expire. If a receiver crashes after reserving delivery,
+crew does not inject the same message again automatically. The pending file
+remains for explicit reconciliation. New sessions never inherit pending files
 automatically. There is no terminal fallback when a native receiver is
 missing.
 

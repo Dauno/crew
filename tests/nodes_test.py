@@ -320,12 +320,23 @@ class NodesTest(unittest.TestCase):
             }
         )
         self.assertFalse(rows[1]["self"])
-        self.assertNotIn("delivery", rows[1])
+        self.assertIsNone(rows[1]["delivery"])
+        self.assertNotIn("delivery", rows[2])
         self.assertEqual(rows[2]["id"], 9)
         self.assertFalse(rows[2]["self"])
         self.assertEqual(
             self.calls()[0]["listen_on"], "unix:/tmp/crew-test.sock"
         )
+
+    def test_list_includes_claude_delivery(self):
+        variables = self.ls_data[0]["tabs"][0]["windows"][0]["user_vars"]
+        variables["crew_cli"] = "claude"
+        env = self.env.copy()
+        env["FAKE_KITTEN_LS"] = json.dumps(self.ls_data)
+        result = self.run_helper("list", env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        row = json.loads(result.stdout.splitlines()[0])
+        self.assertIsNone(row["delivery"])
 
     def test_list_handles_pi_window_without_session_label(self):
         self.ls_data[0]["tabs"][0]["windows"][0]["user_vars"].pop(
@@ -387,7 +398,7 @@ class NodesTest(unittest.TestCase):
         self.assertTrue(message.is_file())
         self.assertFalse((inbox / "received" / message.name).exists())
         codex_window = next(row for row in rows if row["id"] == 8)
-        self.assertNotIn("delivery", codex_window)
+        self.assertIsNone(codex_window["delivery"])
 
     def test_list_keeps_stderr_separate_from_json(self):
         env = self.env.copy()
@@ -1144,6 +1155,60 @@ class NodesTest(unittest.TestCase):
         self.assertEqual(message["text"], "first line\nsecond line")
         self.assertFalse(any("send-text" in call["args"] for call in self.calls()))
         self.assertFalse(any("get-text" in call["args"] for call in self.calls()))
+
+    def test_send_and_notify_warn_for_old_holds(self):
+        held_id = "44444444-4444-4444-8444-444444444444"
+        report = self.root / "report.md"
+        report.write_text("done\n", encoding="utf-8")
+        for command, session, window in (
+            ("send", self.worker_session, 8),
+            ("notify", self.parent_session, 7),
+        ):
+            inbox = self.crew_home / "mailboxes" / session
+            inbox.mkdir(parents=True, exist_ok=True)
+            marker = inbox / ".delivery.json"
+            for age in (None, 10, 60, 120):
+                with self.subTest(command=command, age=age):
+                    if age is None:
+                        marker.unlink(missing_ok=True)
+                    else:
+                        marker.write_text(json.dumps({"id": held_id}))
+                        timestamp = time.time() - age
+                        os.utime(marker, (timestamp, timestamp))
+                    if command == "send":
+                        result = self.run_helper(
+                            "send", "8", input_text="hello"
+                        )
+                        self.assertRegex(
+                            result.stdout,
+                            r"^stored as pending; recipient must "
+                            r"acknowledge: "
+                            r"[0-9a-f-]{36}\n$",
+                        )
+                    else:
+                        result = self.run_helper(
+                            "notify", "done", str(report),
+                            env=self.notify_environment(),
+                        )
+                        self.assertRegex(
+                            result.stdout,
+                            r"^stored as pending; delivery, acknowledgement "
+                            r"and reading unconfirmed; message=[0-9a-f-]{36} "
+                            r"recipient_session=" + session +
+                            r" recipient_window=7\n$",
+                        )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    if age is None or age < 60:
+                        self.assertEqual(result.stderr, "")
+                    else:
+                        self.assertRegex(
+                            result.stderr,
+                            rf"^warning: Kitty window {window} holds "
+                            rf"unacknowledged message {held_id} for "
+                            rf"({age}|{age + 1})s; "
+                            r"this message waits until that session runs "
+                            r"crew-nodes ack\.\n$",
+                        )
 
     def test_send_rejects_old_enter_options_and_unlabelled_windows(self):
         for option in ("--enter", "--enter-only"):
