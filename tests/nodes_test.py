@@ -1210,6 +1210,35 @@ class NodesTest(unittest.TestCase):
                             r"crew-nodes ack\.\n$",
                         )
 
+    def test_send_and_notify_ignore_unavailable_delivery_status(self):
+        inbox = self.crew_home / "mailboxes" / self.parent_session
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / ".delivery.json").write_text('{invalid', encoding="utf-8")
+        report = self.root / "report.md"
+        report.write_text("done\n", encoding="utf-8")
+        for command in ("send", "notify"):
+            with self.subTest(command=command):
+                if command == "send":
+                    result = self.run_helper(
+                        "send", "7", input_text="hello",
+                        env=self.notify_environment(),
+                    )
+                    pattern = (r"^stored as pending; recipient must "
+                               r"acknowledge: [0-9a-f-]{36}\n$")
+                else:
+                    result = self.run_helper(
+                        "notify", "done", str(report),
+                        env=self.notify_environment(),
+                    )
+                    pattern = (r"^stored as pending; delivery, "
+                               r"acknowledgement and reading unconfirmed; "
+                               r"message=[0-9a-f-]{36} "
+                               r"recipient_session=22222222-2222-4222-8222-"
+                               r"222222222222 recipient_window=7\n$")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
+                self.assertRegex(result.stdout, pattern)
+
     def test_send_rejects_old_enter_options_and_unlabelled_windows(self):
         for option in ("--enter", "--enter-only"):
             with self.subTest(option=option):

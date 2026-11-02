@@ -178,7 +178,8 @@ missing.
 
 Pi uses a session extension. Claude uses `SessionStart` `watchPaths` and a
 one-shot `FileChanged` hook with `asyncRewake`. The hook emits context but
-never acknowledges it. Codex runs its visible TUI on a per-session local
+never acknowledges it. It ends with `Acknowledge now: crew-nodes ack ID`.
+Codex runs its visible TUI on a per-session local
 app-server. A supervised receiver queues to that server's loaded root thread.
 A new root thread invalidates the route; messaging fails closed until crew
 starts a fresh session.
