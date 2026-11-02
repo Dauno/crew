@@ -164,6 +164,8 @@ Each CLI session owns `$CREW_HOME/mailboxes/<session-id>/`. Messages contain
 only `id`, `from` and `text`; the recipient comes from the mailbox route.
 Publication writes a temporary file and renames it atomically into `pending/`.
 A private dispatch marker prevents repeated native injection before `ack`.
+Claude stores its live session ID in `claude-session.json` and serializes
+updates and claims with `.claude-session.lock` in the mailbox.
 
 Each receiver processes one message at a time. An acknowledgement validates
 `CREW_SESSION_ID`, moves that message into `received/` and permits the next
@@ -177,10 +179,13 @@ automatically. There is no terminal fallback when a native receiver is
 missing.
 
 Pi uses a session extension. Claude uses `SessionStart` `watchPaths` and a
-one-shot `FileChanged` hook with `asyncRewake`. The hook emits context but
-never acknowledges it. It ends with `Acknowledge now: crew-nodes ack ID`.
-Codex runs its visible TUI on a per-session local
-app-server. A supervised receiver queues to that server's loaded root thread.
+one-shot `FileChanged` hook with `asyncRewake`. Each session start atomically
+records its ID. The hook claims only for that live session when both IDs are
+available. Missing or unreadable IDs allow claims. Previously claimed messages
+are not redelivered. The hook emits context but never acknowledges it.
+The hook text ends with `Acknowledge now: crew-nodes ack ID`. Codex runs its
+visible TUI on a per-session local app-server. A supervised receiver queues
+to that server's loaded root thread.
 A new root thread invalidates the route; messaging fails closed until crew
 starts a fresh session.
 
