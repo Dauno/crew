@@ -1398,10 +1398,12 @@ class NodesTest(unittest.TestCase):
                 result = self.run_helper("close", "8", env=env)
                 self.assertIn("refusing to close this window", result.stderr)
         env["FAKE_KITTEN_FAIL_LS"] = "1"
+        env["FAKE_KITTEN_STDERR"] = "private lookup failure"
         result = self.run_helper("spawn", "--name", "worker", "--cli", "pi",
                                  "--cwd", str(self.work), env=env)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("cannot find this window", result.stderr)
+        self.assertNotIn("private lookup failure", result.stderr)
 
     def test_unresolved_own_window_is_permissive_except_spawn(self):
         for matches in (0, 2):
@@ -1567,8 +1569,6 @@ class NodesTest(unittest.TestCase):
         self.assertFalse(self.calls()[-1]["hyprland_set"])
         self.assertFalse(self.calls()[-1]["runtime_set"])
 
-    def test_spawn_split_uses_window_anchored_to_caller(self):
-        result = self.run_helper(
     def test_spawn_tab_uses_inferred_parent(self):
         env = self.notify_environment()
         env.pop("KITTY_WINDOW_ID")
@@ -1581,6 +1581,8 @@ class NodesTest(unittest.TestCase):
         self.assertEqual(args[args.index("--match") + 1], "window_id:8")
         self.assertEqual(args[args.index("--source-window") + 1], "id:8")
 
+    def test_spawn_split_uses_window_anchored_to_caller(self):
+        result = self.run_helper(
             "spawn", "--name", "guide", "--cli", "claude",
             "--cwd", str(self.work), "--split",
         )

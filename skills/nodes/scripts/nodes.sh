@@ -81,7 +81,7 @@ own_window_id() {
   fi
   [[ -n ${CREW_SESSION_ID:-} ]] || return 0
   if [[ -z $listing ]]; then
-    listing=$(kitty_ls) || return 0
+    listing=$(kitty_ls 2>/dev/null) || return 0
   fi
   jq -r --arg session "$CREW_SESSION_ID" '
     [.[]?.tabs[]?.windows[]? | select(.user_vars.crew_session == $session)
