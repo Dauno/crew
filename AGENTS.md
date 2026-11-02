@@ -123,6 +123,9 @@ crew-nodes <command>
 
 IDs are Kitty window IDs within one Kitty instance.
 The helper refuses to send to, interrupt or close its own window.
+It uses a positive `KITTY_WINDOW_ID`, or the single window labeled with its
+`CREW_SESSION_ID` when that ID is unavailable. If neither resolves the window,
+self-protection remains permissive and `spawn` fails.
 `interrupt` and `close` act only on windows labeled `crew_role=worker`.
 `send ID` resolves the live window's `crew_session` user variable and stores
 its message in that session's mailbox. The success result confirms storage,

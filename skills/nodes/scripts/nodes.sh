@@ -73,9 +73,28 @@ valid_id() {
   [[ $1 =~ ^[1-9][0-9]*$ ]] || die "window ID must be a positive integer: $1"
 }
 
+own_window_id() {
+  local listing=${1:-}
+  if [[ ${KITTY_WINDOW_ID:-} =~ ^[1-9][0-9]*$ ]]; then
+    printf '%s\n' "$KITTY_WINDOW_ID"
+    return
+  fi
+  [[ -n ${CREW_SESSION_ID:-} ]] || return 0
+  if [[ -z $listing ]]; then
+    listing=$(kitty_ls) || return 0
+  fi
+  jq -r --arg session "$CREW_SESSION_ID" '
+    [.[]?.tabs[]?.windows[]? | select(.user_vars.crew_session == $session)
+      | .id | tostring]
+    | if length == 1 then .[0] | select(test("^[1-9][0-9]*$"))
+      else empty end
+  ' <<<"$listing"
+}
+
 refuse_self() {
-  local action=$1 id=$2
-  [[ -z ${KITTY_WINDOW_ID:-} || $id != "$KITTY_WINDOW_ID" ]] ||
+  local action=$1 id=$2 own
+  own=$(own_window_id)
+  [[ -z $own || $id != "$own" ]] ||
     die "refusing to $action this window."
 }
 
@@ -156,8 +175,9 @@ native_target_session() {
 }
 
 list_windows() {
-  local listing session_ids deliveries script
+  local listing session_ids deliveries script own
   listing=$(kitty_ls)
+  own=$(own_window_id "$listing")
   script=$(mailbox_script)
   session_ids=$(jq -r '
     .[]?.tabs[]?.windows[]?
@@ -177,7 +197,7 @@ list_windows() {
       ')
     fi
   fi
-  jq -c --arg self "${KITTY_WINDOW_ID:-}" --argjson deliveries "$deliveries" '
+  jq -c --arg self "$own" --argjson deliveries "$deliveries" '
     .[]?.tabs[]?.windows[]? as $window
     | ({
         id: $window.id,
@@ -621,7 +641,7 @@ notify_parent() {
 
 spawn_node() {
   local name='' cli='' cwd='' task=${CREW_TASK:-} reply directory_error
-  local started_at session_id crew_home inbox split=0
+  local started_at session_id crew_home inbox split=0 parent
   local -a extra_args=()
   while [[ $# -gt 0 ]]; do
     case $1 in
@@ -648,9 +668,10 @@ spawn_node() {
       $pi_task != *$'\r'* ]] ||
       die 'invalid task path component for Pi worker.'
   fi
-  [[ -n ${KITTY_WINDOW_ID:-} ]] ||
-    die 'KITTY_WINDOW_ID is not set; spawn must run inside a Kitty window.'
-  valid_id "$KITTY_WINDOW_ID"
+  parent=$(own_window_id)
+  [[ -n $parent ]] || die \
+    'cannot find this window; set KITTY_WINDOW_ID or run inside a crew' \
+    'session in Kitty.'
   [[ -n ${CREW_BIN:-} ]] || die 'CREW_BIN is not set.'
   [[ -x $CREW_BIN ]] || die "CREW_BIN is not executable: $CREW_BIN"
   started_at=$(date +%s)
@@ -663,15 +684,15 @@ spawn_node() {
   if ! CREW_HOME=$crew_home CREW_SESSION_ID=$session_id \
     CREW_INBOX=$inbox python3 "$script" reserve \
       --cli "$cli" --node "$name" --task "$task" \
-      --parent "$KITTY_WINDOW_ID" --started-at "$started_at" \
+      --parent "$parent" --started-at "$started_at" \
       >/dev/null; then
     die 'could not reserve worker session identity.'
   fi
 
   local -a launch_args=(launch --keep-focus --copy-env)
   if [[ $split == 1 ]]; then
-    launch_args+=(--type=window --match "window_id:$KITTY_WINDOW_ID"
-      --next-to "id:$KITTY_WINDOW_ID" --location=vsplit
+    launch_args+=(--type=window --match "window_id:$parent"
+      --next-to "id:$parent" --location=vsplit
       --title "$name · $cli")
   else
     launch_args+=(--type=tab --tab-title "$name · $cli")
@@ -686,7 +707,7 @@ spawn_node() {
     --env CREW_ROLE=worker \
     --env "CREW_NODE=$name" \
     --env "CREW_TASK=$task" \
-    --env "CREW_PARENT=$KITTY_WINDOW_ID" \
+    --env "CREW_PARENT=$parent" \
     --env "CREW_STARTED_AT=$started_at" \
     --var "crew_node=$name" \
     --var "crew_cli=$cli" \
@@ -694,7 +715,7 @@ spawn_node() {
     --var crew_native=0 \
     --var crew_role=worker \
     --var "crew_task=$task" \
-    --var "crew_parent=$KITTY_WINDOW_ID" \
+    --var "crew_parent=$parent" \
     "$CREW_BIN" "$cli" "${extra_args[@]}" 2>&1); then
     die "Kitty could not spawn $cli: $reply"
   fi
