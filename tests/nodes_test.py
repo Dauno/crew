@@ -320,12 +320,23 @@ class NodesTest(unittest.TestCase):
             }
         )
         self.assertFalse(rows[1]["self"])
-        self.assertNotIn("delivery", rows[1])
+        self.assertIsNone(rows[1]["delivery"])
+        self.assertNotIn("delivery", rows[2])
         self.assertEqual(rows[2]["id"], 9)
         self.assertFalse(rows[2]["self"])
         self.assertEqual(
             self.calls()[0]["listen_on"], "unix:/tmp/crew-test.sock"
         )
+
+    def test_list_includes_claude_delivery(self):
+        variables = self.ls_data[0]["tabs"][0]["windows"][0]["user_vars"]
+        variables["crew_cli"] = "claude"
+        env = self.env.copy()
+        env["FAKE_KITTEN_LS"] = json.dumps(self.ls_data)
+        result = self.run_helper("list", env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        row = json.loads(result.stdout.splitlines()[0])
+        self.assertIsNone(row["delivery"])
 
     def test_list_handles_pi_window_without_session_label(self):
         self.ls_data[0]["tabs"][0]["windows"][0]["user_vars"].pop(
@@ -387,7 +398,7 @@ class NodesTest(unittest.TestCase):
         self.assertTrue(message.is_file())
         self.assertFalse((inbox / "received" / message.name).exists())
         codex_window = next(row for row in rows if row["id"] == 8)
-        self.assertNotIn("delivery", codex_window)
+        self.assertIsNone(codex_window["delivery"])
 
     def test_list_keeps_stderr_separate_from_json(self):
         env = self.env.copy()
@@ -1145,6 +1156,89 @@ class NodesTest(unittest.TestCase):
         self.assertFalse(any("send-text" in call["args"] for call in self.calls()))
         self.assertFalse(any("get-text" in call["args"] for call in self.calls()))
 
+    def test_send_and_notify_warn_for_old_holds(self):
+        held_id = "44444444-4444-4444-8444-444444444444"
+        report = self.root / "report.md"
+        report.write_text("done\n", encoding="utf-8")
+        for command, session, window in (
+            ("send", self.worker_session, 8),
+            ("notify", self.parent_session, 7),
+        ):
+            inbox = self.crew_home / "mailboxes" / session
+            inbox.mkdir(parents=True, exist_ok=True)
+            marker = inbox / ".delivery.json"
+            for age in (None, 10, 60, 120):
+                with self.subTest(command=command, age=age):
+                    if age is None:
+                        marker.unlink(missing_ok=True)
+                    else:
+                        marker.write_text(json.dumps({"id": held_id}))
+                        timestamp = time.time() - age
+                        os.utime(marker, (timestamp, timestamp))
+                    if command == "send":
+                        result = self.run_helper(
+                            "send", "8", input_text="hello"
+                        )
+                        self.assertRegex(
+                            result.stdout,
+                            r"^stored as pending; recipient must "
+                            r"acknowledge: "
+                            r"[0-9a-f-]{36}\n$",
+                        )
+                    else:
+                        result = self.run_helper(
+                            "notify", "done", str(report),
+                            env=self.notify_environment(),
+                        )
+                        self.assertRegex(
+                            result.stdout,
+                            r"^stored as pending; delivery, acknowledgement "
+                            r"and reading unconfirmed; message=[0-9a-f-]{36} "
+                            r"recipient_session=" + session +
+                            r" recipient_window=7\n$",
+                        )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    if age is None or age < 60:
+                        self.assertEqual(result.stderr, "")
+                    else:
+                        self.assertRegex(
+                            result.stderr,
+                            rf"^warning: Kitty window {window} holds "
+                            rf"unacknowledged message {held_id} for "
+                            rf"({age}|{age + 1})s; "
+                            r"this message waits until that session runs "
+                            r"crew-nodes ack\.\n$",
+                        )
+
+    def test_send_and_notify_ignore_unavailable_delivery_status(self):
+        inbox = self.crew_home / "mailboxes" / self.parent_session
+        inbox.mkdir(parents=True, exist_ok=True)
+        (inbox / ".delivery.json").write_text('{invalid', encoding="utf-8")
+        report = self.root / "report.md"
+        report.write_text("done\n", encoding="utf-8")
+        for command in ("send", "notify"):
+            with self.subTest(command=command):
+                if command == "send":
+                    result = self.run_helper(
+                        "send", "7", input_text="hello",
+                        env=self.notify_environment(),
+                    )
+                    pattern = (r"^stored as pending; recipient must "
+                               r"acknowledge: [0-9a-f-]{36}\n$")
+                else:
+                    result = self.run_helper(
+                        "notify", "done", str(report),
+                        env=self.notify_environment(),
+                    )
+                    pattern = (r"^stored as pending; delivery, "
+                               r"acknowledgement and reading unconfirmed; "
+                               r"message=[0-9a-f-]{36} "
+                               r"recipient_session=22222222-2222-4222-8222-"
+                               r"222222222222 recipient_window=7\n$")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stderr, "")
+                self.assertRegex(result.stdout, pattern)
+
     def test_send_rejects_old_enter_options_and_unlabelled_windows(self):
         for option in ("--enter", "--enter-only"):
             with self.subTest(option=option):
@@ -1262,6 +1356,83 @@ class NodesTest(unittest.TestCase):
             any("close-window" in call["args"] for call in self.calls())
         )
 
+    def test_inferred_own_window(self):
+        env = self.notify_environment()
+        env.pop("KITTY_WINDOW_ID")
+        report = self.root / "report.md"
+        report.write_text("done\n", encoding="utf-8")
+        env["CREW_PARENT"] = "8"
+        for args in (("send", "8"), ("type", "8"),
+                     ("notify", "done", str(report)), ("interrupt", "8"),
+                     ("close", "8")):
+            with self.subTest(args=args):
+                result = self.run_helper(*args, input_text="hello", env=env)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("refusing to", result.stderr)
+        self.log.write_text("")
+        result = self.run_helper("list", env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        rows = [json.loads(line) for line in result.stdout.splitlines()]
+        self.assertEqual([row["id"] for row in rows if row["self"]], [8])
+        self.assertEqual(len(self.calls()), 1)
+        result = self.run_helper(
+            "spawn", "--name", "worker", "--cli", "pi", "--cwd",
+            str(self.work), "--split", env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.calls()[-1]["args"]
+        for value in ("window_id:8", "id:8", "CREW_PARENT=8",
+                      "crew_parent=8"):
+            self.assertIn(value, args)
+        session = next(x.split("=", 1)[1] for x in args
+                       if x.startswith("CREW_SESSION_ID="))
+        metadata = json.loads((self.crew_home / "mailboxes" / session
+                               / "session.json").read_text())
+        self.assertEqual(metadata["parent"], "8")
+
+    def test_invalid_window_id_fallback_and_failed_lookup(self):
+        env = self.notify_environment()
+        for invalid in ("0", "abc", "-8"):
+            with self.subTest(invalid=invalid):
+                env["KITTY_WINDOW_ID"] = invalid
+                result = self.run_helper("close", "8", env=env)
+                self.assertIn("refusing to close this window", result.stderr)
+        env["FAKE_KITTEN_FAIL_LS"] = "1"
+        env["FAKE_KITTEN_STDERR"] = "private lookup failure"
+        result = self.run_helper("spawn", "--name", "worker", "--cli", "pi",
+                                 "--cwd", str(self.work), env=env)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("cannot find this window", result.stderr)
+        self.assertNotIn("private lookup failure", result.stderr)
+
+    def test_unresolved_own_window_is_permissive_except_spawn(self):
+        for matches in (0, 2):
+            with self.subTest(matches=matches):
+                data = json.loads(json.dumps(self.ls_data))
+                windows = data[0]["tabs"][0]["windows"]
+                windows[0]["user_vars"]["crew_session"] = self.sender_session
+                windows[1]["user_vars"]["crew_session"] = self.sender_session
+                if matches == 0:
+                    windows[0]["user_vars"]["crew_session"] = (
+                        self.parent_session
+                    )
+                    windows[1]["user_vars"]["crew_session"] = (
+                        self.worker_session
+                    )
+                env = self.env.copy()
+                env.pop("KITTY_WINDOW_ID")
+                env["FAKE_KITTEN_LS"] = json.dumps(data)
+                result = self.run_helper(
+                    "type", "8", input_text="hello", env=env
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                result = self.run_helper(
+                    "spawn", "--name", "worker", "--cli", "pi", "--cwd",
+                    str(self.work), env=env,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("cannot find this window", result.stderr)
+
     def test_spawn_rejects_invalid_pi_task_before_reserving_or_launching(
         self,
     ):
@@ -1351,7 +1522,9 @@ class NodesTest(unittest.TestCase):
              "--keep-focus", "--copy-env"],
         )
         self.assertIn("--type=tab", args)
-        for value in ("--type=window", "--match", "--next-to",
+        self.assertEqual(args[args.index("--match") + 1], "window_id:7")
+        self.assertEqual(args[args.index("--source-window") + 1], "id:7")
+        for value in ("--type=window", "--next-to",
                       "--location=vsplit", "--title"):
             self.assertNotIn(value, args)
         for value in (
@@ -1395,6 +1568,18 @@ class NodesTest(unittest.TestCase):
         self.assertEqual(metadata["task"], "crew-v1")
         self.assertFalse(self.calls()[-1]["hyprland_set"])
         self.assertFalse(self.calls()[-1]["runtime_set"])
+
+    def test_spawn_tab_uses_inferred_parent(self):
+        env = self.notify_environment()
+        env.pop("KITTY_WINDOW_ID")
+        result = self.run_helper(
+            "spawn", "--name", "worker", "--cli", "pi", "--cwd",
+            str(self.work), env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        args = self.calls()[-1]["args"]
+        self.assertEqual(args[args.index("--match") + 1], "window_id:8")
+        self.assertEqual(args[args.index("--source-window") + 1], "id:8")
 
     def test_spawn_split_uses_window_anchored_to_caller(self):
         result = self.run_helper(

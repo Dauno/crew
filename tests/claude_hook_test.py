@@ -72,7 +72,9 @@ class ClaudeHookTest(unittest.TestCase):
         hook_output = output["hookSpecificOutput"]
         self.assertEqual(hook_output["hookEventName"], "SessionStart")
         self.assertEqual(hook_output["watchPaths"], [str(self.inbox / "signal")])
-        self.assertIn(message_id, hook_output["additionalContext"])
+        self.assertTrue(hook_output["additionalContext"].endswith(
+            f"Acknowledge now: crew-nodes ack {message_id}"
+        ))
         self.assertTrue((self.inbox / "pending" / f"{message_id}.json").is_file())
         self.assertFalse((self.inbox / "received" / f"{message_id}.json").exists())
 
@@ -89,6 +91,9 @@ class ClaudeHookTest(unittest.TestCase):
         self.assertIn(first, result.stderr)
         self.assertIn(SENDER, result.stderr)
         self.assertIn("first line\nsecond line", result.stderr)
+        self.assertTrue(result.stderr.endswith(
+            f"Acknowledge now: crew-nodes ack {first}\n"
+        ))
         self.assertFalse((self.inbox / "received" / f"{first}.json").exists())
 
         repeated = self.hook(event)
@@ -104,6 +109,45 @@ class ClaudeHookTest(unittest.TestCase):
         self.assertIn(second, next_message.stderr)
         self.assertNotIn(first, next_message.stderr)
         self.assertFalse((self.inbox / "received" / f"{second}.json").exists())
+
+    def test_session_start_records_and_replaces_live_session(self):
+        record = self.inbox / "claude-session.json"
+        for source, session in (("startup", "old"), ("fork", "new")):
+            with self.subTest(source=source):
+                result = self.hook({"hook_event_name": "SessionStart",
+                                    "source": source, "session_id": session})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(record.read_text())["session_id"],
+                                 session)
+
+    def test_file_changed_live_session_guard_fails_open(self):
+        record = self.inbox / "claude-session.json"
+        cases = (("matching", "live", "live", 2),
+                 ("different", "old", "live", 0),
+                 ("no event id", None, "live", 2),
+                 ("missing record", "live", None, 2),
+                 ("unreadable record", "live", "invalid", 2))
+        for label, event_id, live_id, expected in cases:
+            with self.subTest(label=label):
+                record.unlink(missing_ok=True)
+                (self.inbox / ".delivery.json").unlink(missing_ok=True)
+                for path in (self.inbox / "pending").glob("*.json"):
+                    path.unlink()
+                if live_id == "invalid":
+                    record.write_text("{")
+                elif live_id is not None:
+                    record.write_text(json.dumps({"session_id": live_id}))
+                message_id = self.publish(label)
+                event = {"hook_event_name": "FileChanged",
+                         "file_path": str(self.inbox / "signal")}
+                if event_id is not None:
+                    event["session_id"] = event_id
+                result = self.hook(event)
+                self.assertEqual(result.returncode, expected, result.stderr)
+                self.assertTrue((self.inbox / "pending" /
+                                 f"{message_id}.json").exists())
+                self.assertEqual((self.inbox / ".delivery.json").exists(),
+                                 expected == 2)
 
     def test_unrelated_file_change_does_not_claim_a_message(self):
         message_id = self.publish("wait for the mailbox signal")

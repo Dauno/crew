@@ -63,17 +63,22 @@ explicit terminal input. `notify` resolves `CREW_PARENT` through the parent's
 
 `list` prints one JSON object per window. Each object includes its ID, title,
 working directory, foreground command, `crew_*` variables and `self` flag.
-Pi windows also include `delivery: null`, a held delivery's ID and age in
-seconds, or `status: unavailable` if inspection fails. Unavailable does not
-mean received. This status is read-only; holds never expire.
+Claude, Codex and Pi windows also include `delivery: null`, a held delivery's
+ID and age in seconds, or `status: unavailable` if inspection fails.
+Unavailable does not mean received. This status is read-only; holds never
+expire.
 Confirm the exact ID and command with `list` before sending. Never send to a
 window marked `self` or to your own window. The helper rejects sends,
-interrupts and closes to its own window.
+interrupts and closes to its own window. It uses a positive `KITTY_WINDOW_ID`,
+or the single window labeled with `CREW_SESSION_ID` when that ID is
+unavailable. If neither resolves the window, self-protection is permissive.
 
 `send ID` reads nonempty UTF-8 text from standard input and stores it
 atomically. Messages allow up to 8 KiB of UTF-8 text. For longer reports,
 write a file and send its path. The receiver presents the message ID and
-sender to the agent.
+sender to the agent. After publication, `send` and `notify` warn on stderr
+if the destination holds an unacknowledged message for at least 60 seconds.
+A failed status lookup produces no warning and does not change the result.
 Claude and Codex agents acknowledge each message after reading it, using
 `crew-nodes ack MESSAGE_ID` before acting. Pi automatically runs `ack` only
 after its receiver verifies the exact custom message in the active Pi session
@@ -193,8 +198,12 @@ draft, so inspect the screen before sending a stop command.
 
 ## Spawn and report
 
-`spawn` requires `CREW_BIN` and a running Kitty window. It creates a worker
-tab with a fresh `CREW_SESSION_ID`, `CREW_INBOX`, task labels and parent ID.
+`spawn` requires `CREW_BIN` and a resolvable Kitty window. It uses a positive
+`KITTY_WINDOW_ID`, or the single window labeled with `CREW_SESSION_ID` when
+that ID is unavailable. It fails when neither resolves the window.
+It creates a worker tab with a fresh `CREW_SESSION_ID`, `CREW_INBOX`, task
+labels and parent ID. Tab mode anchors placement and environment copying to
+the caller with `--match window_id:ID` and `--source-window id:ID`.
 It prints the new window ID. Keep the worker's task, repository and report
 path explicit in its brief. Use `spawn --split` for the guide role by default.
 It opens a window next to the caller in the current tab. It respects Kitty's

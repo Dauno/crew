@@ -32,6 +32,7 @@ require_runtime_tools() {
   done
 }
 
+readonly delivery_warning_seconds=60
 send_wait_seconds=60
 poll_interval=0.25
 if [[ ${CREW_NODES_TESTING:-0} == 1 ]]; then
@@ -72,9 +73,28 @@ valid_id() {
   [[ $1 =~ ^[1-9][0-9]*$ ]] || die "window ID must be a positive integer: $1"
 }
 
+own_window_id() {
+  local listing=${1:-}
+  if [[ ${KITTY_WINDOW_ID:-} =~ ^[1-9][0-9]*$ ]]; then
+    printf '%s\n' "$KITTY_WINDOW_ID"
+    return
+  fi
+  [[ -n ${CREW_SESSION_ID:-} ]] || return 0
+  if [[ -z $listing ]]; then
+    listing=$(kitty_ls 2>/dev/null) || return 0
+  fi
+  jq -r --arg session "$CREW_SESSION_ID" '
+    [.[]?.tabs[]?.windows[]? | select(.user_vars.crew_session == $session)
+      | .id | tostring]
+    | if length == 1 then .[0] | select(test("^[1-9][0-9]*$"))
+      else empty end
+  ' <<<"$listing"
+}
+
 refuse_self() {
-  local action=$1 id=$2
-  [[ -z ${KITTY_WINDOW_ID:-} || $id != "$KITTY_WINDOW_ID" ]] ||
+  local action=$1 id=$2 own
+  own=$(own_window_id)
+  [[ -z $own || $id != "$own" ]] ||
     die "refusing to $action this window."
 }
 
@@ -155,12 +175,14 @@ native_target_session() {
 }
 
 list_windows() {
-  local listing session_ids deliveries script
+  local listing session_ids deliveries script own
   listing=$(kitty_ls)
+  own=$(own_window_id "$listing")
   script=$(mailbox_script)
   session_ids=$(jq -r '
     .[]?.tabs[]?.windows[]?
-    | select(.user_vars.crew_cli == "pi")
+    | select(.user_vars.crew_cli == "pi" or
+        .user_vars.crew_cli == "claude" or .user_vars.crew_cli == "codex")
     | .user_vars.crew_session // empty
     | select(type == "string" and length > 0)
   ' <<<"$listing" | sort -u)
@@ -175,7 +197,7 @@ list_windows() {
       ')
     fi
   fi
-  jq -c --arg self "${KITTY_WINDOW_ID:-}" --argjson deliveries "$deliveries" '
+  jq -c --arg self "$own" --argjson deliveries "$deliveries" '
     .[]?.tabs[]?.windows[]? as $window
     | ({
         id: $window.id,
@@ -187,7 +209,8 @@ list_windows() {
         vars: (($window.user_vars // {})
           | with_entries(select(.key | startswith("crew_")))),
         self: (($window.id | tostring) == $self)
-      } + (if $window.user_vars.crew_cli == "pi" then
+      } + (if (["pi", "claude", "codex"] |
+        index($window.user_vars.crew_cli)) != null then
         {delivery: (if ($window.user_vars.crew_session | type) == "string"
           then $deliveries[$window.user_vars.crew_session] // null
           else null end)}
@@ -477,8 +500,30 @@ send_and_enter() {
   kitty_send_text "$id" $'\r'
 }
 
+held_delivery() {
+  local destination=$1 script=$2 status
+  status=$(printf '%s\n' "$destination" |
+    python3 "$script" status --sessions 2>/dev/null) || return 0
+  jq -r --arg session "$destination" --argjson threshold \
+    "$delivery_warning_seconds" '
+    .[$session] | select(.age_seconds >= $threshold and
+      (.age_seconds | type) == "number" and (.id | type) == "string") |
+    "\(.id) \(.age_seconds)"
+  ' <<<"$status" 2>/dev/null || true
+}
+
+warn_held_delivery() {
+  local window=$1 held=$2 id age
+  [[ -n $held ]] || return 0
+  read -r id age <<<"$held"
+  printf '%s%s%s\n' \
+    "warning: Kitty window $window holds unacknowledged message $id " \
+    "for ${age}s; this message waits until that session runs " \
+    'crew-nodes ack.' >&2 || true
+}
+
 send_native() {
-  local id=${1:-} destination message_id script
+  local id=${1:-} destination message_id script held
   if [[ $# -eq 2 && ( $2 == --enter || $2 == --enter-only ) ]]; then
     die 'send no longer types into a terminal; use type ID [--enter] for explicit keyboard input.'
   fi
@@ -487,10 +532,12 @@ send_native() {
   refuse_self send "$id"
   destination=$(native_target_session "$id")
   script=$(mailbox_script)
+  held=$(held_delivery "$destination" "$script")
   if ! message_id=$(python3 "$script" publish --to "$destination"); then
     die "could not store message for Kitty window $id."
   fi
   printf 'stored as pending; recipient must acknowledge: %s\n' "$message_id"
+  warn_held_delivery "$id" "$held"
 }
 
 ack_message() {
@@ -565,7 +612,7 @@ record_metrics() {
 
 notify_parent() {
   local status=${1:-} report=${2:-} parent message destination script
-  local message_id
+  local message_id held
   [[ $# -eq 2 ]] || usage
   [[ -n $status ]] || die 'notify STATUS must not be empty.'
   [[ -n ${CREW_TASK:-} ]] || die 'notify requires CREW_TASK.'
@@ -581,6 +628,7 @@ notify_parent() {
   message="$CREW_TASK/$CREW_NODE: $status. Report: $report. Metrics: $metrics"
   destination=$(native_target_session "$parent")
   script=$(mailbox_script)
+  held=$(held_delivery "$destination" "$script")
   if ! message_id=$(printf '%s' "$message" |
     python3 "$script" publish --to "$destination"); then
     die "could not store notice for parent Kitty window $parent."
@@ -588,11 +636,12 @@ notify_parent() {
   printf '%s message=%s recipient_session=%s recipient_window=%s\n' \
     'stored as pending; delivery, acknowledgement and reading unconfirmed;' \
     "$message_id" "$destination" "$parent"
+  warn_held_delivery "$parent" "$held"
 }
 
 spawn_node() {
   local name='' cli='' cwd='' task=${CREW_TASK:-} reply directory_error
-  local started_at session_id crew_home inbox split=0
+  local started_at session_id crew_home inbox split=0 parent
   local -a extra_args=()
   while [[ $# -gt 0 ]]; do
     case $1 in
@@ -619,9 +668,10 @@ spawn_node() {
       $pi_task != *$'\r'* ]] ||
       die 'invalid task path component for Pi worker.'
   fi
-  [[ -n ${KITTY_WINDOW_ID:-} ]] ||
-    die 'KITTY_WINDOW_ID is not set; spawn must run inside a Kitty window.'
-  valid_id "$KITTY_WINDOW_ID"
+  parent=$(own_window_id)
+  [[ -n $parent ]] || die \
+    'cannot find this window; set KITTY_WINDOW_ID or run inside a crew' \
+    'session in Kitty.'
   [[ -n ${CREW_BIN:-} ]] || die 'CREW_BIN is not set.'
   [[ -x $CREW_BIN ]] || die "CREW_BIN is not executable: $CREW_BIN"
   started_at=$(date +%s)
@@ -634,18 +684,19 @@ spawn_node() {
   if ! CREW_HOME=$crew_home CREW_SESSION_ID=$session_id \
     CREW_INBOX=$inbox python3 "$script" reserve \
       --cli "$cli" --node "$name" --task "$task" \
-      --parent "$KITTY_WINDOW_ID" --started-at "$started_at" \
+      --parent "$parent" --started-at "$started_at" \
       >/dev/null; then
     die 'could not reserve worker session identity.'
   fi
 
   local -a launch_args=(launch --keep-focus --copy-env)
   if [[ $split == 1 ]]; then
-    launch_args+=(--type=window --match "window_id:$KITTY_WINDOW_ID"
-      --next-to "id:$KITTY_WINDOW_ID" --location=vsplit
+    launch_args+=(--type=window --match "window_id:$parent"
+      --next-to "id:$parent" --location=vsplit
       --title "$name · $cli")
   else
-    launch_args+=(--type=tab --tab-title "$name · $cli")
+    launch_args+=(--type=tab --match "window_id:$parent"
+      --source-window "id:$parent" --tab-title "$name · $cli")
   fi
   if ! reply=$(kitty_remote "${launch_args[@]}" \
     --cwd "$cwd" \
@@ -657,7 +708,7 @@ spawn_node() {
     --env CREW_ROLE=worker \
     --env "CREW_NODE=$name" \
     --env "CREW_TASK=$task" \
-    --env "CREW_PARENT=$KITTY_WINDOW_ID" \
+    --env "CREW_PARENT=$parent" \
     --env "CREW_STARTED_AT=$started_at" \
     --var "crew_node=$name" \
     --var "crew_cli=$cli" \
@@ -665,7 +716,7 @@ spawn_node() {
     --var crew_native=0 \
     --var crew_role=worker \
     --var "crew_task=$task" \
-    --var "crew_parent=$KITTY_WINDOW_ID" \
+    --var "crew_parent=$parent" \
     "$CREW_BIN" "$cli" "${extra_args[@]}" 2>&1); then
     die "Kitty could not spawn $cli: $reply"
   fi

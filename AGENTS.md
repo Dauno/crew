@@ -123,6 +123,9 @@ crew-nodes <command>
 
 IDs are Kitty window IDs within one Kitty instance.
 The helper refuses to send to, interrupt or close its own window.
+It uses a positive `KITTY_WINDOW_ID`, or the single window labeled with its
+`CREW_SESSION_ID` when that ID is unavailable. If neither resolves the window,
+self-protection remains permissive and `spawn` fails.
 `interrupt` and `close` act only on windows labeled `crew_role=worker`.
 `send ID` resolves the live window's `crew_session` user variable and stores
 its message in that session's mailbox. The success result confirms storage,
@@ -150,6 +153,9 @@ Any nonempty custom status remains valid.
 On success, `notify` prints the published message ID, recipient session and
 Kitty window. This confirms storage as pending, not delivery, acknowledgement
 or reading. It does not wait for or simulate an empty parent editor.
+`send` and `notify` warn on stderr after publication when the destination
+holds an unacknowledged message for at least 60 seconds. A failed status
+lookup produces no warning and does not change the command result.
 `spawn` also sets `CREW_STARTED_AT` to the Unix time of the launch.
 
 ### Native message delivery
@@ -158,22 +164,28 @@ Each CLI session owns `$CREW_HOME/mailboxes/<session-id>/`. Messages contain
 only `id`, `from` and `text`; the recipient comes from the mailbox route.
 Publication writes a temporary file and renames it atomically into `pending/`.
 A private dispatch marker prevents repeated native injection before `ack`.
+Claude stores its live session ID in `claude-session.json` and serializes
+updates and claims with `.claude-session.lock` in the mailbox.
 
 Each receiver processes one message at a time. An acknowledgement validates
 `CREW_SESSION_ID`, moves that message into `received/` and permits the next
-message. Pi's `list` entry includes `delivery: null`, a held message ID and
-age in seconds, or `status: unavailable` if inspection fails. Unavailable does
-not mean received. Reading status never changes mailbox state, and holds never
-expire. If a receiver crashes after reserving delivery, crew does
-not inject the same message again automatically. The pending file remains for
-explicit reconciliation. New sessions never inherit pending files
+message. Claude, Codex and Pi `list` entries include `delivery: null`, a held
+message ID and age in seconds, or `status: unavailable` if inspection fails.
+Unavailable does not mean received. Reading status never changes mailbox
+state, and holds never expire. If a receiver crashes after reserving delivery,
+crew does not inject the same message again automatically. The pending file
+remains for explicit reconciliation. New sessions never inherit pending files
 automatically. There is no terminal fallback when a native receiver is
 missing.
 
 Pi uses a session extension. Claude uses `SessionStart` `watchPaths` and a
-one-shot `FileChanged` hook with `asyncRewake`. The hook emits context but
-never acknowledges it. Codex runs its visible TUI on a per-session local
-app-server. A supervised receiver queues to that server's loaded root thread.
+one-shot `FileChanged` hook with `asyncRewake`. Each session start atomically
+records its ID. The hook claims only for that live session when both IDs are
+available. Missing or unreadable IDs allow claims. Previously claimed messages
+are not redelivered. The hook emits context but never acknowledges it.
+The hook text ends with `Acknowledge now: crew-nodes ack ID`. Codex runs its
+visible TUI on a per-session local app-server. A supervised receiver queues
+to that server's loaded root thread.
 A new root thread invalidates the route; messaging fails closed until crew
 starts a fresh session.
 
@@ -207,6 +219,7 @@ Metrics hold numbers and identifiers, never prompts, code or output. They
 stay on the machine with the rest of `$CREW_HOME`. A metrics failure never
 blocks a notice: the summary then says `metrics unavailable`.
 `spawn` runs `kitten @ launch --type=tab --keep-focus --copy-env` by default.
+It adds `--match window_id:ID` and `--source-window id:ID` for the caller.
 With `--split`, it anchors `--type=window` to the caller's tab and window,
 uses `--location=vsplit` and titles and labels the window. Focus stays on the
 caller. This respects Kitty's layout and does not change configuration.
