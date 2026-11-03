@@ -276,6 +276,10 @@ Codex's sandbox blocks the Kitty socket, so a sandboxed worker cannot report.
 
 Never pass model, provider or credential settings.
 Each CLI keeps the human's configuration, including Vertex endpoints.
+One default differs. The package wraps Claude Code so that
+`CLAUDE_CODE_CERT_STORE` defaults to `bundled,system`, as upstream does.
+nixpkgs narrows it to `system`. A value in the human's environment
+replaces it.
 
 ## Verification
 

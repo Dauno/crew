@@ -30,6 +30,17 @@
           };
           piPkgs = import nixpkgs-pi { inherit system; };
           codex = codexPkgs.codex;
+          # nixpkgs narrows the cert store to system; restore the upstream
+          # bundled,system default. The human's own value still wins.
+          claudeCode = pkgs.symlinkJoin {
+            name = "claude-code-cert-store";
+            paths = [ claudePkgs.claude-code ];
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            postBuild = ''
+              wrapProgram "$out/bin/claude" \
+                --set-default CLAUDE_CODE_CERT_STORE bundled,system
+            '';
+          };
           runtimeInputs = [
             pkgs.bash
             pkgs.coreutils
@@ -39,7 +50,7 @@
             pkgs.kitty
             pkgs.ripgrep
             pkgs.fd
-            claudePkgs.claude-code
+            claudeCode
             codex
             piPkgs.pi-coding-agent
           ];
@@ -97,11 +108,18 @@
             shellcheck bin/crew bin/crew-nodes "''${shell_scripts[@]}"
             touch "$out"
           '';
+          certStoreCheck = pkgs.runCommand "claude-cert-store-check" { } ''
+            grep -F "CLAUDE_CODE_CERT_STORE-'bundled,system'" \
+              ${claudeCode}/bin/claude
+            grep -F "${claudeCode}/bin" ${crew}/bin/crew
+            touch "$out"
+          '';
         in
         {
           packages.default = crew;
           packages.crew = crew;
           checks.launcher = launcherCheck;
+          checks.claude-cert-store = certStoreCheck;
         };
     in
     {
